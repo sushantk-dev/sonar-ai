@@ -1,0 +1,320 @@
+<div class="page">
+
+  <!-- ── Header ── -->
+  <div class="page-header">
+    <div>
+      <h1>Settings</h1>
+      <p class="meta">Pipeline configuration, credentials, and model settings</p>
+    </div>
+    <button class="save-btn" [class.save-btn--saved]="saved" (click)="save()">
+      <ng-container *ngIf="!saved">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+          <path d="M2 7L5 10L11 3" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Save Changes
+      </ng-container>
+      <ng-container *ngIf="saved">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+          <path d="M2 7L5 10L11 3" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Saved
+      </ng-container>
+    </button>
+  </div>
+
+  <!-- ── Layout ── -->
+  <div class="layout">
+
+    <!-- Tab nav -->
+    <nav class="tab-nav">
+      <button
+        *ngFor="let tab of tabs"
+        class="tab-nav__item"
+        [class.tab-nav__item--active]="active() === tab.id"
+        (click)="active.set(tab.id)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path [attr.d]="tab.icon"/>
+        </svg>
+        {{ tab.label }}
+      </button>
+    </nav>
+
+    <!-- Tab pane -->
+    <div class="pane">
+
+      <!-- ════ PIPELINE ════ -->
+      <ng-container *ngIf="active() === 'pipeline'">
+
+        <div class="section">
+          <div class="section__head">
+            <div class="section__title">Pipeline</div>
+            <div class="section__desc">Vertex AI model and execution limits</div>
+          </div>
+          <div class="fields">
+            <div class="field">
+              <label class="field__label">GCP Project ID</label>
+              <input class="input" [(ngModel)]="cfg.gcpProject" placeholder="my-gcp-project">
+            </div>
+            <div class="field">
+              <label class="field__label">Vertex AI Model</label>
+              <select class="input" [(ngModel)]="cfg.model">
+                <option>gemini-1.5-pro</option>
+                <option>gemini-1.5-flash</option>
+                <option>gemini-2.0-flash</option>
+              </select>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label class="field__label">Max Issues per Run</label>
+                <input class="input input--sm" type="number"
+                       [(ngModel)]="cfg.maxIssues" min="0" max="200">
+                <span class="field__hint">0 = unlimited</span>
+              </div>
+              <div class="field">
+                <label class="field__label">Max LLM Tokens</label>
+                <input class="input input--sm" type="number"
+                       [(ngModel)]="cfg.maxTokens" min="512" max="8192" step="512">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section__head">
+            <div class="section__title">Confidence Thresholds</div>
+            <div class="section__desc">Controls which outcome each fixed issue receives</div>
+          </div>
+          <div class="fields">
+            <div class="field">
+              <label class="field__label">HIGH — opens a normal PR</label>
+              <div class="slider-row">
+                <input type="range" class="slider" min="0" max="1" step="0.05"
+                       [(ngModel)]="cfg.highThresh"
+                       (ngModelChange)="cfg.highThresh = +($event)">
+                <span class="slider-val slider-val--success">
+                  {{ cfg.highThresh | number:'1.2-2' }}
+                </span>
+              </div>
+            </div>
+            <div class="field">
+              <label class="field__label">MEDIUM — opens a draft PR</label>
+              <div class="slider-row">
+                <input type="range" class="slider" min="0" max="1" step="0.05"
+                       [(ngModel)]="cfg.medThresh"
+                       (ngModelChange)="cfg.medThresh = +($event)">
+                <span class="slider-val slider-val--warn">
+                  {{ cfg.medThresh | number:'1.2-2' }}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div class="thresh-legend">
+            <div class="thresh-row thresh-row--success">
+              <span class="thresh-dot"></span>
+              ≥ {{ cfg.highThresh | number:'1.2-2' }} → PR opened + CODEOWNERS assigned
+            </div>
+            <div class="thresh-row thresh-row--warn">
+              <span class="thresh-dot"></span>
+              ≥ {{ cfg.medThresh | number:'1.2-2' }} → Draft PR + review requested
+            </div>
+            <div class="thresh-row thresh-row--danger">
+              <span class="thresh-dot"></span>
+              Below {{ cfg.medThresh | number:'1.2-2' }} → Escalation .md written
+            </div>
+          </div>
+        </div>
+
+      </ng-container>
+
+      <!-- ════ GITHUB ════ -->
+      <ng-container *ngIf="active() === 'github'">
+
+        <div class="section">
+          <div class="section__head">
+            <div class="section__title">GitHub</div>
+            <div class="section__desc">Repository access and target commit</div>
+          </div>
+          <div class="fields">
+            <div class="field">
+              <label class="field__label">Personal Access Token</label>
+              <div class="input-reveal">
+                <input class="input" type="password"
+                       [(ngModel)]="cfg.githubToken" placeholder="ghp_…">
+              </div>
+              <span class="field__hint">
+                Requires <code>repo</code> and <code>pull_requests</code> scopes
+              </span>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label class="field__label">Repository</label>
+                <input class="input" [(ngModel)]="cfg.githubRepo"
+                       placeholder="owner/repository">
+              </div>
+              <div class="field">
+                <label class="field__label">
+                  Commit SHA
+                  <span class="optional">optional</span>
+                </label>
+                <input class="input" [(ngModel)]="cfg.commitSha"
+                       placeholder="abc1234">
+                <span class="field__hint">Defaults to HEAD</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section__head">
+            <div class="section__title">SonarCloud</div>
+            <div class="section__desc">Used for post-fix rescan validation</div>
+          </div>
+          <div class="fields">
+            <div class="field">
+              <label class="field__label">Sonar API Token</label>
+              <input class="input" type="password"
+                     [(ngModel)]="cfg.sonarToken" placeholder="squ_…">
+            </div>
+            <div class="field">
+              <label class="field__label">Organization</label>
+              <input class="input input--sm"
+                     [(ngModel)]="cfg.sonarOrg" placeholder="my-org">
+            </div>
+          </div>
+        </div>
+
+      </ng-container>
+
+      <!-- ════ AGENTS ════ -->
+      <ng-container *ngIf="active() === 'agents'">
+
+        <div class="section">
+          <div class="section__head">
+            <div class="section__title">LLM Agent Chain</div>
+            <div class="section__desc">Planner → Generator → Critic temperatures and retry limit</div>
+          </div>
+          <div class="fields">
+            <div class="field">
+              <div class="field__label-row">
+                <label class="field__label">Planner temperature</label>
+                <span class="field__val">{{ cfg.plannerTemp }}</span>
+              </div>
+              <input type="range" class="slider" min="0" max="1" step="0.1"
+                     [(ngModel)]="cfg.plannerTemp">
+              <span class="field__hint">Lower = more deterministic chain-of-thought</span>
+            </div>
+            <div class="field">
+              <div class="field__label-row">
+                <label class="field__label">Generator temperature</label>
+                <span class="field__val">{{ cfg.generatorTemp }}</span>
+              </div>
+              <input type="range" class="slider" min="0" max="1" step="0.1"
+                     [(ngModel)]="cfg.generatorTemp">
+              <span class="field__hint">Lower = more consistent unified diffs</span>
+            </div>
+            <div class="field">
+              <label class="field__label">Max Critic Retries</label>
+              <input class="input input--sm" type="number"
+                     [(ngModel)]="cfg.maxRetries" min="0" max="5">
+              <span class="field__hint">
+                If the critic rejects after this many attempts the issue is escalated
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section__head">
+            <div class="section__title">RAG Vector Store</div>
+            <div class="section__desc">ChromaDB prior fix retrieval settings</div>
+          </div>
+          <div class="fields">
+            <div class="field">
+              <label class="field__label">ChromaDB Path</label>
+              <input class="input" [(ngModel)]="cfg.chromaPath"
+                     placeholder="./chroma_db">
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label class="field__label">Embedding Model</label>
+                <select class="input" [(ngModel)]="cfg.embeddingModel">
+                  <option>all-MiniLM-L6-v2</option>
+                  <option>text-embedding-3-small</option>
+                  <option>textembedding-gecko</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field__label">Top-K Results</label>
+                <input class="input input--sm" type="number"
+                       [(ngModel)]="cfg.ragTopK" min="1" max="10">
+                <span class="field__hint">Fixes retrieved per issue</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </ng-container>
+
+      <!-- ════ TRACING ════ -->
+      <ng-container *ngIf="active() === 'tracing'">
+
+        <div class="section">
+          <div class="section__head">
+            <div class="section__title">LangSmith Tracing</div>
+            <div class="section__desc">Full pipeline observability via LangSmith</div>
+          </div>
+          <div class="fields">
+
+            <!-- Toggle row -->
+            <div class="toggle-field">
+              <div class="toggle-field__text">
+                <div class="toggle-field__label">Enable tracing</div>
+                <div class="toggle-field__hint">
+                  Sends run traces to LangSmith for debugging and evaluation
+                </div>
+              </div>
+              <button
+                class="toggle"
+                [class.toggle--on]="cfg.tracingEnabled"
+                (click)="cfg.tracingEnabled = !cfg.tracingEnabled"
+                [attr.aria-pressed]="cfg.tracingEnabled">
+                <span class="toggle__knob"></span>
+              </button>
+            </div>
+
+            <div class="field">
+              <label class="field__label">API Key</label>
+              <input class="input" type="password"
+                     [(ngModel)]="cfg.langsmithKey" placeholder="ls__…">
+            </div>
+            <div class="field">
+              <label class="field__label">Project Name</label>
+              <input class="input input--sm"
+                     [(ngModel)]="cfg.langsmithProject" placeholder="sonar-ai">
+            </div>
+          </div>
+        </div>
+
+        <!-- .env preview -->
+        <div class="env-block">
+          <div class="env-block__header">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <rect x="1" y="1" width="10" height="10" rx="2"
+                    stroke="currentColor" stroke-width="1.2"/>
+              <path d="M3 4h6M3 6.5h4" stroke="currentColor"
+                    stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            .env snippet
+          </div>
+          <pre class="env-block__code">{{ envSnippet }}</pre>
+        </div>
+
+      </ng-container>
+
+    </div><!-- /pane -->
+  </div><!-- /layout -->
+</div>
