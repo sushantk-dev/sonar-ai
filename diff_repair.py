@@ -226,7 +226,7 @@ def _fix_offsets(patch: str, file_lines: list[str]) -> str:
         old_count = sum(1 for l in hunk_body if not l.startswith("+"))
         new_count = sum(1 for l in hunk_body if not l.startswith("-"))
         new_plus  = anchor + (int(m.group(3)) - int(m.group(1)))
-        suffix    = m.group(5) or ""
+        suffix    = _clean_hunk_suffix(m.group(5) or "")
         result.append(f"@@ -{anchor},{old_count} +{new_plus},{new_count} @@{suffix}\n")
         result.extend(hunk_body)
 
