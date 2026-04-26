@@ -117,11 +117,180 @@ def validate(state: AgentState) -> AgentState:
 
 def _apply_diff(repo_path: str, patch_hunks: str) -> tuple[bool, str]:
     """
-    Write patch to a temp file.
-    1. Dry-run: git apply --check  (validates offsets without touching files)
-    2. Real apply: git apply
-    Falls back to --ignore-whitespace on the dry-run to give a clearer error.
+    Apply a unified diff using a pure-Python in-memory applier (primary path).
+    Falls back to git apply if the Python applier fails.
+
+    Pure-Python approach is immune to all git apply formatting quirks:
+    corrupt patch, wrong encoding, CRLF issues, header path mismatches, etc.
     """
+    # ── Primary: pure-Python in-memory apply ─────────────────────────────────
+    ok, error = _apply_diff_python(patch_hunks)
+    if ok:
+        return True, ""
+
+    logger.warning(f"[Validator] Python applier failed ({error[:120]}), trying git apply fallback")
+
+    # ── Fallback: git apply (best-effort) ────────────────────────────────────
+    return _apply_diff_git(repo_path, patch_hunks)
+
+
+def _apply_diff_python(patch_hunks: str) -> tuple[bool, str]:
+    """
+    Pure-Python unified diff applier.
+
+    Algorithm:
+      1. Parse the patch to find the target file path (from +++ line).
+      2. Parse each @@ hunk into (old_start, removed_lines, added_lines).
+      3. Load the file into a list of lines.
+      4. For each hunk (in reverse order so earlier hunks don't shift later offsets):
+         a. Fuzzy-locate the block of removed lines using strip()-based comparison
+            (±FUZZ lines around the declared @@ start), tolerating indentation
+            drift from the LLM.
+         b. Fall back to a full-file scan with the same strip() comparison.
+         c. Replace the matched block with the added lines.
+      5. Write the result back atomically (temp file → rename).
+    """
+    import re as _re
+
+    FUZZ = 10  # lines to search around the declared @@ start for fuzzy matching
+
+    def _lines_match(file_block: list[str], patch_block: list[str]) -> bool:
+        """Strip-based comparison: tolerates indentation drift from the LLM."""
+        if len(file_block) != len(patch_block):
+            return False
+        return all(f.strip() == p.strip() for f, p in zip(file_block, patch_block))
+
+    # ── 1. Extract file path from +++ line ───────────────────────────────────
+    file_path: Optional[str] = None
+    for line in patch_hunks.splitlines():
+        if line.startswith("+++ "):
+            raw = line[4:].strip()
+            # Strip leading b/ prefix (unified diff convention)
+            raw = _re.sub(r"^[ab]/", "", raw)
+            file_path = raw
+            break
+
+    if not file_path:
+        return False, "No +++ line found in patch — cannot determine target file"
+
+    target = Path(file_path)
+    if not target.exists():
+        return False, f"Target file does not exist: {file_path}"
+
+    # ── 2. Parse hunks ────────────────────────────────────────────────────────
+    HUNK_HDR = _re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+    hunks: list[tuple[int, list[str], list[str]]] = []  # (old_start_1based, removed, added)
+
+    current_removed: list[str] = []
+    current_added: list[str] = []
+    current_old_start: int = 0
+    in_hunk = False
+
+    for line in patch_hunks.splitlines():
+        if line.startswith("--- ") or line.startswith("+++ "):
+            if in_hunk:
+                hunks.append((current_old_start, current_removed, current_added))
+                in_hunk = False
+            continue
+        m = HUNK_HDR.match(line)
+        if m:
+            if in_hunk:
+                hunks.append((current_old_start, current_removed, current_added))
+            current_old_start = int(m.group(1))
+            current_removed = []
+            current_added = []
+            in_hunk = True
+            continue
+        if in_hunk:
+            if line.startswith("-"):
+                current_removed.append(line[1:])
+            elif line.startswith("+"):
+                current_added.append(line[1:])
+            elif line.startswith(" ") or line == "":
+                # context line — counts as both removed and added
+                ctx = line[1:] if line.startswith(" ") else ""
+                current_removed.append(ctx)
+                current_added.append(ctx)
+
+    if in_hunk:
+        hunks.append((current_old_start, current_removed, current_added))
+
+    if not hunks:
+        return False, "No hunks parsed from patch"
+
+    # ── 3. Load file ──────────────────────────────────────────────────────────
+    try:
+        original_text = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return False, f"Cannot read {file_path}: {exc}"
+
+    # Preserve original line endings: detect CRLF vs LF
+    crlf = "\r\n" in original_text
+    file_lines: list[str] = original_text.splitlines()  # strips line endings
+
+    # ── 4. Apply hunks in reverse order ──────────────────────────────────────
+    for old_start, removed, added in reversed(hunks):
+        n = len(removed)
+        match_idx: Optional[int] = None  # 0-based index into file_lines
+
+        if n == 0:
+            # Pure-insertion hunk: anchor at declared line (adjusted to 0-based)
+            match_idx = max(0, old_start - 1)
+        else:
+            # Pass 1: strip()-based fuzzy search ±FUZZ around declared offset
+            search_start = max(0, old_start - 1)
+            for delta in range(FUZZ + 1):
+                for direction in ([0] if delta == 0 else [delta, -delta]):
+                    idx = search_start + direction
+                    if idx < 0 or idx + n > len(file_lines):
+                        continue
+                    if _lines_match(file_lines[idx : idx + n], removed):
+                        match_idx = idx
+                        break
+                if match_idx is not None:
+                    break
+
+            # Pass 2: full-file scan with strip() — handles completely wrong offsets
+            if match_idx is None:
+                for idx in range(len(file_lines) - n + 1):
+                    if _lines_match(file_lines[idx : idx + n], removed):
+                        match_idx = idx
+                        break
+
+        if match_idx is None and n > 0:
+            return False, (
+                f"Cannot locate hunk at line {old_start} "
+                f"(no match found in file even with indentation-tolerant scan). "
+                f"First removed line: {removed[0][:80]!r}"
+            )
+
+        if match_idx is None:
+            match_idx = max(0, old_start - 1)
+
+        # Replace matched block with added lines
+        replace_count = n if n > 0 else 0
+        file_lines[match_idx : match_idx + replace_count] = added
+
+    # ── 5. Write back atomically ──────────────────────────────────────────────
+    eol = "\r\n" if crlf else "\n"
+    new_text = eol.join(file_lines)
+    if original_text.endswith("\n") or original_text.endswith("\r\n"):
+        new_text += eol
+
+    try:
+        # Write to a sibling temp file then replace — atomic on all OSes
+        tmp_path = target.with_suffix(target.suffix + ".sonarai_tmp")
+        tmp_path.write_text(new_text, encoding="utf-8")
+        tmp_path.replace(target)
+    except OSError as exc:
+        return False, f"Cannot write patched file {file_path}: {exc}"
+
+    logger.info(f"[Validator] Python applier: patched {target.name} ({len(hunks)} hunk(s))")
+    return True, ""
+
+
+def _apply_diff_git(repo_path: str, patch_hunks: str) -> tuple[bool, str]:
+    """git apply fallback — used only when the Python applier fails."""
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".patch", delete=False, encoding="utf-8"
     ) as tmp:
@@ -129,25 +298,17 @@ def _apply_diff(repo_path: str, patch_hunks: str) -> tuple[bool, str]:
         patch_file = tmp.name
 
     try:
-        # Dry run
         dry = subprocess.run(
             ["git", "apply", "--check", "--whitespace=nowarn", patch_file],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
+            cwd=repo_path, capture_output=True, text=True, timeout=30,
         )
         if dry.returncode != 0:
             hint = _diff_apply_hint(dry.stderr)
             return False, f"git apply --check failed:\n{dry.stderr.strip()}\n{hint}"
 
-        # Real apply
         apply = subprocess.run(
             ["git", "apply", "--whitespace=nowarn", patch_file],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
+            cwd=repo_path, capture_output=True, text=True, timeout=30,
         )
         if apply.returncode != 0:
             return False, f"git apply failed:\n{apply.stderr.strip()}"
@@ -156,6 +317,8 @@ def _apply_diff(repo_path: str, patch_hunks: str) -> tuple[bool, str]:
 
     except subprocess.TimeoutExpired:
         return False, "git apply timed out after 30s"
+    except FileNotFoundError:
+        return False, "git not found"
     finally:
         try:
             os.unlink(patch_file)
@@ -164,7 +327,35 @@ def _apply_diff(repo_path: str, patch_hunks: str) -> tuple[bool, str]:
 
 
 def _revert_patch(repo_path: str, patch_hunks: str) -> None:
-    """Attempt to revert an applied patch via git apply -R (reverse)."""
+    """
+    Revert an applied patch.
+    Primary: git checkout -- <file> (reads from +++ line).
+    Fallback: git apply -R.
+    """
+    import re as _re
+
+    # Try to extract the patched file path and restore it via git checkout
+    file_path: Optional[str] = None
+    for line in patch_hunks.splitlines():
+        if line.startswith("+++ "):
+            raw = line[4:].strip()
+            raw = _re.sub(r"^[ab]/", "", raw)
+            file_path = raw
+            break
+
+    if file_path:
+        try:
+            result = subprocess.run(
+                ["git", "checkout", "--", file_path],
+                cwd=repo_path, capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0:
+                logger.info(f"[Validator] Reverted {file_path} via git checkout")
+                return
+        except Exception:
+            pass
+
+    # Fallback: git apply -R
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".patch", delete=False, encoding="utf-8"
     ) as tmp:
@@ -173,13 +364,10 @@ def _revert_patch(repo_path: str, patch_hunks: str) -> None:
     try:
         result = subprocess.run(
             ["git", "apply", "-R", "--whitespace=nowarn", patch_file],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
+            cwd=repo_path, capture_output=True, text=True, timeout=30,
         )
         if result.returncode == 0:
-            logger.info("[Validator] Patch reverted (repo restored for retry)")
+            logger.info("[Validator] Patch reverted via git apply -R")
         else:
             logger.warning(
                 f"[Validator] Could not auto-revert patch: {result.stderr.strip()[:200]}. "
