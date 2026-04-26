@@ -119,7 +119,7 @@ _BAD_HUNK_RE = re.compile(
 def _fix_hunk_headers(patch: str) -> str:
     """
     Rewrite every @@ line to the canonical form:
-        @@ -<start>,<count> +<start>,<count> @@[ suffix]
+        @@ -<start>,<count> +<start>,<count> @@[ method_name]
 
     Fixes all of:
       @@ -36, 8 +37,8 @@        space after comma
@@ -128,12 +128,12 @@ def _fix_hunk_headers(patch: str) -> str:
       @@ - 36,8 + 37,8 @@       space after sign
       @@-36,8 +37,8@@           no spaces around @@
       @@ -36 +37 @@             missing count (defaults to 1)
+      @@ -39,6 +40,7 @@?        trailing ? or other punctuation after @@
     """
     out = []
     changed = False
     for line in patch.splitlines(keepends=True):
-        # Only attempt to fix lines that look like @@ headers
-        if "@@" not in line or (not line.lstrip().startswith("@@")):
+        if "@@" not in line or not line.lstrip().startswith("@@"):
             out.append(line)
             continue
 
@@ -146,7 +146,12 @@ def _fix_hunk_headers(patch: str) -> str:
         old_count = m.group(2) if m.group(2) is not None else "1"
         new_start = m.group(3)
         new_count = m.group(4) if m.group(4) is not None else "1"
-        suffix    = m.group(5)   # e.g. " processTemplateFromFile" or ""
+        suffix    = m.group(5)
+
+        # Strip trailing punctuation/garbage from the suffix.
+        # Valid suffix is either empty or a method name starting with a space.
+        # Anything else (?, !, trailing dots, etc.) is an LLM artefact.
+        suffix = _clean_hunk_suffix(suffix)
 
         canonical = f"@@ -{old_start},{old_count} +{new_start},{new_count} @@{suffix}\n"
         if canonical.rstrip() != line.rstrip():
@@ -159,6 +164,23 @@ def _fix_hunk_headers(patch: str) -> str:
     if changed:
         logger.info("[DiffRepair] Step 0b: malformed @@ headers corrected")
     return "".join(out)
+
+
+def _clean_hunk_suffix(suffix: str) -> str:
+    """
+    The optional text after the closing @@ is normally a method name like
+    ' processTemplateFromFile'.  Strip any trailing punctuation that isn't
+    part of a valid Java identifier (?, !, ., trailing spaces, etc.).
+    Keep a leading space if the suffix contains a word character.
+    """
+    if not suffix:
+        return ""
+    # Remove trailing non-identifier characters (anything after the last word char)
+    cleaned = re.sub(r"[^\w\s]+$", "", suffix).rstrip()
+    # Re-add leading space if there's content
+    if cleaned.strip():
+        return " " + cleaned.strip()
+    return ""
 
 
 # ── Strategy A: offset correction ────────────────────────────────────────────
