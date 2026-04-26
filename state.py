@@ -1,7 +1,13 @@
 """
-SonarAI — Shared Agent State
+SonarAI — Shared Agent State  (Iteration 2)
 Passed through every node of the LangGraph state graph.
 All fields are optional to allow partial population at different stages.
+
+Iteration 2 additions:
+  - rag_context        : similar prior fixes retrieved from ChromaDB
+  - pipeline_results   : list of per-issue outcome dicts (for summary report)
+  - sonar_rescan_ok    : result of post-fix Sonar API rescan
+  - langsmith_run_id   : LangSmith trace ID for this pipeline run
 """
 
 from __future__ import annotations
@@ -49,6 +55,28 @@ class ValidationResult(TypedDict):
     test_error: str
 
 
+class RAGContext(TypedDict):
+    """Prior fix examples retrieved from ChromaDB."""
+    rule_key: str
+    similar_fixes: list[dict[str, Any]]   # [{patch, reasoning, confidence, file}]
+    retrieved_count: int
+
+
+class IssueResult(TypedDict):
+    """Per-issue outcome stored in pipeline_results list."""
+    issue_key: str
+    rule_key: str
+    severity: str
+    file_path: str
+    line: int
+    outcome: str           # "pr_opened" | "draft_pr" | "escalated" | "skipped" | "error"
+    pr_url: Optional[str]
+    escalation_path: Optional[str]
+    confidence: float
+    sonar_rescan_ok: Optional[bool]
+    error: Optional[str]
+
+
 class AgentState(TypedDict, total=False):
     # ── Input ─────────────────────────────────────────────────────────────────
     sonar_report_path: str          # Path to sonar-report.json
@@ -69,6 +97,9 @@ class AgentState(TypedDict, total=False):
     # ── Rule KB ───────────────────────────────────────────────────────────────
     rule_kb: dict[str, Any]         # rule_key → rule metadata dict
 
+    # ── RAG (Iteration 2) ─────────────────────────────────────────────────────
+    rag_context: RAGContext         # Similar prior fixes from ChromaDB
+
     # ── LLM outputs ───────────────────────────────────────────────────────────
     planner_output: PlannerOutput
     generator_output: GeneratorOutput
@@ -78,6 +109,10 @@ class AgentState(TypedDict, total=False):
     # ── Validation ────────────────────────────────────────────────────────────
     validation: ValidationResult
 
+    # ── Sonar Rescan (Iteration 2) ────────────────────────────────────────────
+    sonar_rescan_ok: Optional[bool]         # True if rule no longer fires after fix
+    sonar_rescan_message: str               # Human-readable rescan result
+
     # ── Delivery ──────────────────────────────────────────────────────────────
     pr_url: Optional[str]           # PR URL if opened
     escalation_path: Optional[str]  # Path to escalation .md if not PRed
@@ -85,3 +120,8 @@ class AgentState(TypedDict, total=False):
     # ── Pipeline metadata ─────────────────────────────────────────────────────
     errors: list[str]               # Accumulated non-fatal errors / warnings
     done: bool                      # Signals terminal state to the graph
+
+    # ── Multi-issue tracking (Iteration 2) ────────────────────────────────────
+    pipeline_results: list[IssueResult]   # Accumulated results across all issues
+    max_issues: int                       # Cap on how many issues to process
+    langsmith_run_id: Optional[str]       # LangSmith trace ID

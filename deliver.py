@@ -1,7 +1,11 @@
 """
-SonarAI — PR Delivery & Escalation  (Phase 05 — hardened)
-Commits the fix, pushes the branch, and opens a GitHub PR
-(or writes an escalation markdown file for LOW-confidence / failed patches).
+SonarAI — PR Delivery & Escalation  (Iteration 2)
+
+Changes from Iteration 1:
+  - After a successful PR, stores the fix in ChromaDB for future RAG retrieval.
+  - Optionally runs a Sonar rescan to confirm the rule no longer fires.
+  - Rescan result is included in the PR body and IssueResult.
+  - Returns IssueResult in state for multi-issue pipeline summary.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from github import Github, GithubException
 from loguru import logger
 
 from config import settings
-from state import AgentState
+from state import AgentState, IssueResult
 
 
 # ── Confidence helpers ────────────────────────────────────────────────────────
@@ -59,11 +63,15 @@ def deliver(state: AgentState) -> AgentState:
         logger.info("[Deliver] DRY RUN — skipping commit, push, and PR creation")
         patch_preview = state.get("generator_output", {}).get("patch_hunks", "")[:500]
         logger.info(f"[Deliver] DRY RUN patch preview:\n{patch_preview}")
-        return {**state, "done": True}
+        result = _make_issue_result(issue, state, "skipped", confidence_score)
+        return {**state, "done": True, **_append_result(state, result)}
 
     if confidence_label == "LOW" or not validation_passed:
         path = _write_escalation(state, confidence_label)
-        return {**state, "escalation_path": path, "done": True}
+        result = _make_issue_result(
+            issue, state, "escalated", confidence_score, escalation_path=path
+        )
+        return {**state, "escalation_path": path, "done": True, **_append_result(state, result)}
 
     # Snapshot the file content *before* committing for the PR body
     before_snippet = _read_method_region(
@@ -79,7 +87,11 @@ def deliver(state: AgentState) -> AgentState:
     except Exception as exc:
         logger.error(f"[Deliver] Git commit/push failed: {exc}")
         path = _write_escalation(state, confidence_label, extra_note=str(exc))
-        return {**state, "escalation_path": path, "done": True}
+        result = _make_issue_result(
+            issue, state, "error", confidence_score,
+            escalation_path=path, error=str(exc)
+        )
+        return {**state, "escalation_path": path, "done": True, **_append_result(state, result)}
 
     # Snapshot after-commit content for PR body
     after_snippet = _read_method_region(
@@ -88,14 +100,98 @@ def deliver(state: AgentState) -> AgentState:
         lines=15,
     )
 
+    # ── Sonar rescan (Iteration 2) ────────────────────────────────────────────
+    sonar_rescan_ok: Optional[bool] = None
+    sonar_rescan_message = ""
+    if settings.enable_sonar_rescan:
+        try:
+            from sonar_rescan import rescan_issue
+            sonar_rescan_ok, sonar_rescan_message = rescan_issue(
+                issue_key=issue["key"],
+                component_key=issue["component"],
+            )
+        except Exception as exc:
+            logger.warning(f"[Deliver] Sonar rescan failed (non-fatal): {exc}")
+            sonar_rescan_message = f"Rescan error: {exc}"
+
     # Open the PR
     try:
-        pr_url = _open_pr(state, confidence_label, before_snippet, after_snippet)
-        return {**state, "pr_url": pr_url, "done": True}
+        pr_url = _open_pr(
+            state, confidence_label, before_snippet, after_snippet,
+            sonar_rescan_ok=sonar_rescan_ok, sonar_rescan_message=sonar_rescan_message,
+        )
     except GithubException as exc:
         logger.error(f"[Deliver] GitHub PR creation failed: {exc}")
         path = _write_escalation(state, confidence_label, extra_note=str(exc))
-        return {**state, "escalation_path": path, "done": True}
+        result = _make_issue_result(
+            issue, state, "error", confidence_score,
+            escalation_path=path, error=str(exc)
+        )
+        return {**state, "escalation_path": path, "done": True, **_append_result(state, result)}
+
+    # ── Store fix in RAG (Iteration 2) ────────────────────────────────────────
+    if settings.enable_rag:
+        try:
+            from rag_store import store_fix
+            store_fix(
+                rule_key=issue["rule_key"],
+                method_context=state.get("method_context", ""),
+                message=issue["message"],
+                patch_hunks=state.get("generator_output", {}).get("patch_hunks", ""),
+                reasoning=planner.get("reasoning", ""),
+                confidence=confidence_score,
+                file_name=Path(state.get("file_path", "unknown")).name,
+            )
+        except Exception as exc:
+            logger.warning(f"[Deliver] RAG store_fix failed (non-fatal): {exc}")
+
+    outcome = "pr_opened" if confidence_label == "HIGH" else "draft_pr"
+    result = _make_issue_result(
+        issue, state, outcome, confidence_score,
+        pr_url=pr_url, sonar_rescan_ok=sonar_rescan_ok
+    )
+    return {
+        **state,
+        "pr_url": pr_url,
+        "sonar_rescan_ok": sonar_rescan_ok,
+        "sonar_rescan_message": sonar_rescan_message,
+        "done": True,
+        **_append_result(state, result),
+    }
+
+
+# ── IssueResult helpers ───────────────────────────────────────────────────────
+
+def _make_issue_result(
+    issue: dict,
+    state: AgentState,
+    outcome: str,
+    confidence: float,
+    pr_url: Optional[str] = None,
+    escalation_path: Optional[str] = None,
+    sonar_rescan_ok: Optional[bool] = None,
+    error: Optional[str] = None,
+) -> IssueResult:
+    return {
+        "issue_key": issue.get("key", ""),
+        "rule_key": issue.get("rule_key", ""),
+        "severity": issue.get("severity", ""),
+        "file_path": state.get("file_path", ""),
+        "line": issue.get("line", 0),
+        "outcome": outcome,
+        "pr_url": pr_url,
+        "escalation_path": escalation_path,
+        "confidence": confidence,
+        "sonar_rescan_ok": sonar_rescan_ok,
+        "error": error,
+    }
+
+
+def _append_result(state: AgentState, result: IssueResult) -> dict:
+    """Return a dict with updated pipeline_results list."""
+    existing = list(state.get("pipeline_results", []))
+    existing.append(result)
+    return {"pipeline_results": existing}
 
 
 # ── Git commit & push ─────────────────────────────────────────────────────────
@@ -115,7 +211,6 @@ def _commit_fix(state: AgentState) -> None:
         f"Auto-fixed by SonarAI"
     )
 
-    # Use relative path for git index to avoid absolute-path issues
     repo_root = Path(repo.working_dir)
     try:
         rel_path = str(Path(file_path).relative_to(repo_root))
@@ -133,9 +228,6 @@ def _push_branch(state: AgentState) -> None:
     if not branch:
         raise ValueError("fix_branch is not set in state")
 
-    # Use repo.git.push() which calls the git subprocess directly and
-    # respects the push URL set on the remote (including the injected token).
-    # This avoids the "no refspec" error from GitPython's high-level push().
     try:
         repo.git.push(
             "origin",
@@ -144,12 +236,7 @@ def _push_branch(state: AgentState) -> None:
         )
         logger.info(f"[Deliver] Pushed branch {branch} → origin")
     except git.GitCommandError as exc:
-        # Surface the actual git error message — much easier to diagnose
-        raise git.GitCommandError(
-            "push",
-            exc.status,
-            stderr=exc.stderr,
-        ) from exc
+        raise git.GitCommandError("push", exc.status, stderr=exc.stderr) from exc
 
 
 # ── GitHub PR ─────────────────────────────────────────────────────────────────
@@ -159,6 +246,8 @@ def _open_pr(
     confidence_label: str,
     before_snippet: str,
     after_snippet: str,
+    sonar_rescan_ok: Optional[bool] = None,
+    sonar_rescan_message: str = "",
 ) -> str:
     """Open a GitHub PR and return the PR URL."""
     gh = Github(settings.github_token, base_url=settings.github_base_url)
@@ -174,7 +263,10 @@ def _open_pr(
     class_name = Path(state["file_path"]).stem
 
     title = f"fix(sonar): resolve {rule_short} in {class_name}.java [{confidence_label}]"
-    body = _build_pr_body(state, confidence_label, before_snippet, after_snippet)
+    body = _build_pr_body(
+        state, confidence_label, before_snippet, after_snippet,
+        sonar_rescan_ok=sonar_rescan_ok, sonar_rescan_message=sonar_rescan_message,
+    )
     is_draft = confidence_label == "MEDIUM"
 
     pr = gh_repo.create_pull(
@@ -186,10 +278,8 @@ def _open_pr(
     )
     logger.info(f"[Deliver] PR #{pr.number} opened: {pr.html_url} (draft={is_draft})")
 
-    # Apply sonar-ai label (create if missing)
     _ensure_label(gh_repo, pr)
 
-    # Auto-assign from CODEOWNERS on HIGH confidence
     if confidence_label == "HIGH":
         _assign_codeowner(gh_repo, pr, state["file_path"])
 
@@ -208,15 +298,26 @@ def _build_pr_body(
     confidence_label: str,
     before_snippet: str,
     after_snippet: str,
+    sonar_rescan_ok: Optional[bool] = None,
+    sonar_rescan_message: str = "",
 ) -> str:
     issue = state["current_issue"]
     planner = state.get("planner_output", {})
     generator = state.get("generator_output", {})
     validation = state.get("validation", {})
+    rag_ctx = state.get("rag_context", {})
 
     badge = _confidence_badge(confidence_label)
     compile_icon = "✅" if validation.get("compile_ok") else "❌"
     test_icon = "✅" if validation.get("tests_ok") else "⚠️ skipped / failed"
+
+    # Sonar rescan row
+    if sonar_rescan_ok is True:
+        rescan_icon = "✅ Issue resolved"
+    elif sonar_rescan_ok is False:
+        rescan_icon = "❌ Issue still reported"
+    else:
+        rescan_icon = "⏭️ Skipped"
 
     patch = generator.get("patch_hunks", "")
     if len(patch) > 4000:
@@ -228,13 +329,18 @@ def _build_pr_body(
 
     concerns = state.get("critic_output", {}).get("concerns", [])
     concerns_md = (
-        "\n".join(f"- {c}" for c in concerns)
-        if concerns
-        else "_None recorded._"
+        "\n".join(f"- {c}" for c in concerns) if concerns else "_None recorded._"
     )
 
     before_block = f"```java\n{before_snippet}\n```" if before_snippet else "_Not available._"
     after_block = f"```java\n{after_snippet}\n```" if after_snippet else "_Not available._"
+
+    # RAG context note
+    rag_count = rag_ctx.get("retrieved_count", 0) if rag_ctx else 0
+    rag_note = (
+        f"_Fix informed by {rag_count} similar prior fix(es) from the vector store._"
+        if rag_count > 0 else "_No similar prior fixes found in vector store._"
+    )
 
     return f"""\
 {badge}  **Confidence score: {confidence_score:.0%}**
@@ -254,6 +360,8 @@ def _build_pr_body(
 {reasoning}
 
 **Fix strategy:** {strategy}
+
+> {rag_note}
 
 ---
 
@@ -293,6 +401,9 @@ def _build_pr_body(
 | Diff applied cleanly | ✅ |
 | Maven compile | {compile_icon} |
 | Maven tests | {test_icon} |
+| Sonar rescan | {rescan_icon} |
+
+{f'> {sonar_rescan_message}' if sonar_rescan_message else ''}
 
 ---
 *Generated by [SonarAI](https://github.com/sonar-ai) — automated Sonar remediation pipeline*
@@ -300,7 +411,6 @@ def _build_pr_body(
 
 
 def _ensure_label(gh_repo, pr) -> None:
-    """Apply 'sonar-ai' label to the PR; create the label if it doesn't exist."""
     label_name = "sonar-ai"
     try:
         try:
@@ -313,9 +423,7 @@ def _ensure_label(gh_repo, pr) -> None:
 
 
 def _assign_codeowner(gh_repo, pr, file_path: str) -> None:
-    """Read CODEOWNERS and request review from the matching owner or team."""
     try:
-        # Try both .github/CODEOWNERS and root CODEOWNERS
         for path in ("CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"):
             try:
                 content = gh_repo.get_contents(path).decoded_content.decode()
@@ -332,7 +440,6 @@ def _assign_codeowner(gh_repo, pr, file_path: str) -> None:
 
         handle = owner.lstrip("@")
         if "/" in handle:
-            # Team: "org/team-name"
             org_name, team_slug = handle.split("/", 1)
             pr.create_review_request(team_reviewers=[team_slug])
             logger.info(f"[Deliver] Requested review from team: {handle}")
@@ -344,11 +451,6 @@ def _assign_codeowner(gh_repo, pr, file_path: str) -> None:
 
 
 def _match_codeowner(content: str, file_path: str) -> Optional[str]:
-    """
-    Find the last matching CODEOWNERS rule (later rules take precedence).
-    Handles *.java, /path/pattern, and ** globs.
-    """
-    file_rel = file_path  # may be absolute; we match against the name too
     file_name = Path(file_path).name
     matched_owner: Optional[str] = None
 
@@ -360,15 +462,14 @@ def _match_codeowner(content: str, file_path: str) -> Optional[str]:
         if len(parts) < 2:
             continue
         pattern, owner = parts[0], parts[1]
-        if _glob_match(pattern, file_rel) or _glob_match(pattern, file_name):
-            matched_owner = owner  # last match wins
+        if _glob_match(pattern, file_path) or _glob_match(pattern, file_name):
+            matched_owner = owner
 
     return matched_owner
 
 
 def _glob_match(pattern: str, target: str) -> bool:
     import fnmatch
-    # Normalise: strip leading slash from pattern
     pat = pattern.lstrip("/")
     return (
         fnmatch.fnmatch(target, pat)
@@ -382,7 +483,6 @@ def _glob_match(pattern: str, target: str) -> bool:
 def _write_escalation(
     state: AgentState, confidence_label: str, extra_note: str = ""
 ) -> str:
-    """Write an escalation markdown file and return its path."""
     issue = state["current_issue"]
     planner = state.get("planner_output", {})
     generator = state.get("generator_output", {})
@@ -392,7 +492,6 @@ def _write_escalation(
     esc_dir.mkdir(parents=True, exist_ok=True)
 
     rule_short = issue["rule_key"].split(":")[-1] if ":" in issue["rule_key"] else issue["rule_key"]
-    # Sanitise key for filename
     safe_key = re.sub(r"[^a-zA-Z0-9_-]", "", issue["key"])[:12]
     filename = f"{safe_key}_{rule_short}.md"
     esc_path = esc_dir / filename
@@ -461,7 +560,6 @@ def _write_escalation(
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _repo_name_from_url(url: str) -> str:
-    """Extract 'owner/repo' from a GitHub URL."""
     match = re.search(r"github\.com[:/](.+?)(?:\.git)?/?$", url)
     if match:
         return match.group(1)
@@ -469,10 +567,6 @@ def _repo_name_from_url(url: str) -> str:
 
 
 def _read_method_region(file_path: str, flagged_line: int, lines: int = 15) -> str:
-    """
-    Read ±lines lines around flagged_line from the file on disk.
-    Returns a numbered snippet or empty string on any error.
-    """
     if not file_path or not flagged_line:
         return ""
     try:

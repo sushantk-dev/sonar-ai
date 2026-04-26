@@ -1,5 +1,11 @@
 """
-SonarAI — LLM Prompt Templates
+SonarAI — LLM Prompt Templates  (Iteration 2)
+
+Changes from Iteration 1:
+  - Planner prompt now accepts optional {rag_context} few-shot examples
+    from ChromaDB prior fix retrieval.
+  - Generator prompt reinforced with stricter @@ offset rules.
+  - Critic prompt extended to check for RAG-inconsistent changes.
 
 NOTE: All { } in system message strings that are NOT template variables must be
 escaped as {{ }} — LangChain's ChatPromptTemplate treats any single { } as a
@@ -28,6 +34,8 @@ _EXPERT_JAVA_ENGINEER = (
 PLANNER_SYSTEM = _EXPERT_JAVA_ENGINEER + (
     "\n\nYour job is to ANALYSE a SonarQube issue and produce a structured remediation plan. "
     "Think step-by-step before committing to a strategy. "
+    "If prior fix examples are provided, use them to inform your approach — prefer patterns "
+    "that have worked before for the same rule. "
     "Respond ONLY with a JSON object — no markdown fences, no extra text — matching this schema:\n"
     "{{\n"
     '  "reasoning": "<chain-of-thought explanation, up to 300 words>",\n'
@@ -51,7 +59,7 @@ PLANNER_HUMAN = """\
 ```java
 {method_context}
 ```
-
+{rag_context}
 Analyse the issue and produce your remediation plan JSON.
 """
 
@@ -78,7 +86,8 @@ GENERATOR_SYSTEM = _EXPERT_JAVA_ENGINEER + (
     "4. Change ONLY what is necessary to fix the reported issue.\n"
     "5. Preserve original indentation and style exactly.\n"
     "6. Add required imports at the top of the file if the fix needs new classes.\n"
-    "7. Do NOT change method signatures unless strictly required.\n\n"
+    "7. Do NOT change method signatures unless strictly required.\n"
+    "8. Every context line inside a hunk MUST start with a single space character.\n\n"
     "Response schema:\n"
     "{{\n"
     '  "patch_hunks": "<complete unified diff as a single string, use \\n for newlines>",\n'
@@ -160,3 +169,31 @@ critic_prompt = ChatPromptTemplate.from_messages([
     SystemMessagePromptTemplate.from_template(CRITIC_SYSTEM),
     HumanMessagePromptTemplate.from_template(CRITIC_HUMAN),
 ])
+
+
+# ── RAG context formatter ─────────────────────────────────────────────────────
+
+def format_rag_context(similar_fixes: list[dict]) -> str:
+    """
+    Format retrieved RAG examples into a human-readable block for the Planner prompt.
+    Returns an empty string if no examples are provided.
+    """
+    if not similar_fixes:
+        return ""
+
+    lines = ["\n## Prior Fix Examples (from vector store — use as reference)"]
+    for i, fix in enumerate(similar_fixes, 1):
+        sim = fix.get("similarity", 0)
+        rule = fix.get("rule_key", "")
+        fname = fix.get("file_name", "")
+        reasoning = fix.get("reasoning", "")
+        patch_preview = fix.get("patch_hunks", "")[:300]
+
+        lines.append(f"\n### Example {i} (rule={rule}, file={fname}, similarity={sim:.2f})")
+        if reasoning:
+            lines.append(f"**Reasoning:** {reasoning}")
+        if patch_preview:
+            lines.append(f"```diff\n{patch_preview}\n```")
+
+    lines.append("")
+    return "\n".join(lines)

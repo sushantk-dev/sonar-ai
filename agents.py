@@ -1,9 +1,14 @@
 """
-SonarAI — LLM Agent Nodes
+SonarAI — LLM Agent Nodes  (Iteration 2)
 Three LangGraph node functions wired into the state graph:
   plan_fix      → LLM·1 Planner  → PlannerOutput
   generate_fix  → LLM·2 Generator → GeneratorOutput
   critique_fix  → LLM·3 Critic   → CriticOutput
+
+Iteration 2 changes:
+  - plan_fix now passes rag_context (prior fix examples) to the Planner prompt.
+  - retrieve_rag_context() is exposed as a standalone node for the graph to call
+    before plan_fix, enabling pre-fetch of ChromaDB results.
 """
 
 from __future__ import annotations
@@ -14,13 +19,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_google_vertexai import ChatVertexAI
 from loguru import logger
 
-from sonar_ai.config import settings
-from sonar_ai.prompts import planner_prompt, generator_prompt, critic_prompt
-from sonar_ai.state import AgentState, PlannerOutput, GeneratorOutput, CriticOutput
+from config import settings
+from prompts import planner_prompt, generator_prompt, critic_prompt, format_rag_context
+from state import AgentState, PlannerOutput, GeneratorOutput, CriticOutput, RAGContext
 
 
 # ── LLM factory ──────────────────────────────────────────────────────────────
@@ -44,7 +48,6 @@ def _parse_json_response(raw: str, node_name: str) -> dict[str, Any]:
     - Wrapping JSON in ```json ... ``` fences
     - Leading/trailing whitespace
     """
-    # Strip markdown fences if present
     cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
     cleaned = re.sub(r"\s*```$", "", cleaned.strip(), flags=re.MULTILINE)
     cleaned = cleaned.strip()
@@ -59,30 +62,12 @@ def _parse_json_response(raw: str, node_name: str) -> dict[str, Any]:
 def _clean_patch_hunks(patch: str) -> str:
     """
     Strip markdown code fences that the LLM embeds INSIDE the patch_hunks JSON value.
-
-    The LLM frequently returns patch_hunks like:
-        "patch_hunks": "```diff\\n--- a/Foo.java\\n+++ b/Foo.java\\n...\\n```"
-
-    After JSON parsing the string value is:
-        ```diff\n--- a/Foo.java\n+++ b/Foo.java\n...\n```
-
-    This function strips those fences so the applier receives a clean unified diff.
-    Also handles:
-      - ```java / ```text / ``` (no language tag)
-      - Windows \\r\\n literal sequences (LLM escaping artefact)
-      - Stray leading/trailing whitespace lines
     """
     if not patch:
         return patch
 
-    # Replace literal \r\n and \n escape sequences that the LLM sometimes emits
-    # inside a JSON string value (double-escaped newlines)
     patch = patch.replace("\\r\\n", "\n").replace("\\n", "\n")
-
-    # Strip any opening fence: ```diff, ```java, ```text, ```patch, ``` etc.
     patch = re.sub(r"^```[a-zA-Z]*\s*\n?", "", patch.lstrip(), flags=re.MULTILINE)
-
-    # Strip any closing fence (``` possibly preceded by whitespace on its own line)
     patch = re.sub(r"\n?^```\s*$", "", patch.rstrip(), flags=re.MULTILINE)
 
     return patch.strip()
@@ -107,18 +92,71 @@ def _rule_kb_entry_text(state: AgentState) -> str:
     return f"No KB entry for rule {rule_key}. Apply generic best-practice remediation."
 
 
+# ── RAG node ─────────────────────────────────────────────────────────────────
+
+def retrieve_rag_context(state: AgentState) -> AgentState:
+    """
+    LangGraph node — retrieve similar prior fixes from ChromaDB.
+    Populates state['rag_context'].
+    Silently no-ops (empty context) if RAG is disabled or unavailable.
+    """
+    if not settings.enable_rag:
+        empty: RAGContext = {"rule_key": "", "similar_fixes": [], "retrieved_count": 0}
+        return {**state, "rag_context": empty}
+
+    issue = state.get("current_issue", {})
+    rule_key = issue.get("rule_key", "")
+    message = issue.get("message", "")
+    method_context = state.get("method_context", "")
+
+    logger.info(f"[RAG] Retrieving prior fixes for rule={rule_key}")
+
+    try:
+        from rag_store import retrieve_similar_fixes
+        similar_fixes = retrieve_similar_fixes(
+            rule_key=rule_key,
+            method_context=method_context,
+            message=message,
+            top_k=settings.rag_top_k,
+        )
+    except Exception as exc:
+        logger.warning(f"[RAG] Retrieval failed (non-fatal): {exc}")
+        similar_fixes = []
+
+    rag_ctx: RAGContext = {
+        "rule_key": rule_key,
+        "similar_fixes": similar_fixes,
+        "retrieved_count": len(similar_fixes),
+    }
+
+    if similar_fixes:
+        logger.info(f"[RAG] Found {len(similar_fixes)} similar fix(es) to use as context")
+    else:
+        logger.info("[RAG] No similar prior fixes found")
+
+    return {**state, "rag_context": rag_ctx}
+
+
 # ── LLM·1  Planner ────────────────────────────────────────────────────────────
 
 def plan_fix(state: AgentState) -> AgentState:
     """
     Analyse the current Sonar issue with chain-of-thought reasoning.
     Populates state['planner_output'].
+    Includes RAG few-shot examples in the prompt if available.
     """
     issue = state["current_issue"]
     logger.info(
         f"[Planner] rule={issue['rule_key']} severity={issue['severity']} "
         f"line={issue['line']}"
     )
+
+    # Build RAG few-shot block
+    rag_ctx = state.get("rag_context", {})
+    similar_fixes = rag_ctx.get("similar_fixes", []) if rag_ctx else []
+    rag_block = format_rag_context(similar_fixes)
+    if similar_fixes:
+        logger.info(f"[Planner] Including {len(similar_fixes)} RAG example(s) in prompt")
 
     llm = _make_llm(temperature=0.1)
     chain = planner_prompt | llm
@@ -131,6 +169,7 @@ def plan_fix(state: AgentState) -> AgentState:
         "flagged_line": issue["line"],
         "rule_kb_entry": _rule_kb_entry_text(state),
         "method_context": state.get("method_context", ""),
+        "rag_context": rag_block,
     }
 
     t0 = time.time()
@@ -142,7 +181,6 @@ def plan_fix(state: AgentState) -> AgentState:
 
     parsed: PlannerOutput = _parse_json_response(raw, "Planner")  # type: ignore[assignment]
 
-    # Validate required fields
     parsed.setdefault("reasoning", "")
     parsed.setdefault("strategy", "")
     parsed.setdefault("confidence", 0.5)
@@ -169,7 +207,6 @@ def generate_fix(state: AgentState) -> AgentState:
 
     logger.info(f"[Generator] retry={retry_count} rule={issue['rule_key']}")
 
-    # Build retry feedback block if this is a retry
     retry_feedback = ""
     if retry_count > 0:
         critic_out = state.get("critic_output", {})
@@ -192,8 +229,6 @@ def generate_fix(state: AgentState) -> AgentState:
     llm = _make_llm(temperature=0.3)
     chain = generator_prompt | llm
 
-    # Compute relative file path for diff header — always forward slashes (POSIX)
-    # so the diff header is valid on Windows too
     repo_root = state.get("repo_local_path", "")
     abs_path = state.get("file_path", "")
     try:
@@ -201,7 +236,6 @@ def generate_fix(state: AgentState) -> AgentState:
     except ValueError:
         rel_path = Path(abs_path).name
 
-    # Give the model the full numbered file so it can produce exact offsets
     full_file_context = _numbered_file(abs_path)
 
     prompt_vars = {
@@ -226,7 +260,6 @@ def generate_fix(state: AgentState) -> AgentState:
     parsed.setdefault("patch_hunks", "")
     parsed.setdefault("changed_methods", [])
 
-    # Strip markdown fences that the LLM embeds INSIDE the patch_hunks string value
     raw_patch = parsed["patch_hunks"]
     cleaned_patch = _clean_patch_hunks(raw_patch)
     if cleaned_patch != raw_patch:
@@ -300,14 +333,12 @@ def _numbered_file(file_path: str, max_lines: int = 300) -> str:
     """
     Return the full file content with 1-based line numbers prepended.
     Capped at max_lines to stay within context limits.
-    The model uses these numbers directly for @@ hunk offset calculation.
     """
     if not file_path:
         return ""
     try:
         lines = Path(file_path).read_text(encoding="utf-8", errors="replace").splitlines()
         if len(lines) > max_lines:
-            # Keep first 150 and last 50 lines with a gap marker
             head = lines[:150]
             tail = lines[-50:]
             gap = len(lines) - 200
