@@ -52,11 +52,11 @@ def validate(state: AgentState) -> AgentState:
         result["compiler_error"] = msg
         return {**state, "validation": result}
 
-    # ── Guard: patch lacks diff markers ──────────────────────────────────────
-    if "@@" not in patch_hunks or ("---" not in patch_hunks and "+++" not in patch_hunks):
+    # ── Guard: patch lacks any diff markers ──────────────────────────────────
+    if "@@" not in patch_hunks and ("---" not in patch_hunks or "+++" not in patch_hunks):
         msg = (
             "Patch does not look like a valid unified diff "
-            "(missing --- / +++ / @@ markers). "
+            "(missing both @@ markers and --- / +++ headers). "
             "Regenerate with proper unified diff format."
         )
         logger.error(f"[Validator] {msg}")
@@ -64,9 +64,11 @@ def validate(state: AgentState) -> AgentState:
         return {**state, "validation": result}
 
     # ── Step 1: Repair & normalise the diff ──────────────────────────────────
-    # Fix Windows backslashes in --- / +++ headers and wrong @@ offsets
-    patch_hunks = normalise_diff_paths(patch_hunks, repo_path, file_path)
+    # 1a. repair_diff: inject missing --- / +++ headers, fix @@ offsets
+    # 1b. normalise_diff_paths: correct the path in --- / +++ to the real relative path
+    # Order matters: inject headers first so normalise has something to rewrite.
     patch_hunks = repair_diff(patch_hunks, file_path)
+    patch_hunks = normalise_diff_paths(patch_hunks, repo_path, file_path)
 
     # ── Step 2: Apply diff ────────────────────────────────────────────────────
     diff_ok, apply_error = _apply_diff(repo_path, patch_hunks)

@@ -35,8 +35,11 @@ from loguru import logger
 def repair_diff(patch: str, file_path: str) -> str:
     """
     Return a version of ``patch`` that git apply will accept against ``file_path``.
-    Tries Strategy A first, then Strategy B.  Returns original patch unchanged
-    if both fail (letting the caller surface the real git error).
+    Steps applied in order:
+      0. Inject missing --- / +++ file headers if the patch starts with @@
+      A. Fix wrong @@ offsets (locate removed lines in file, rewrite header)
+      B. Full rebuild via difflib if A still doesn't apply
+    Returns original patch unchanged if all steps fail.
     """
     if not file_path or not Path(file_path).exists():
         return patch
@@ -48,7 +51,10 @@ def repair_diff(patch: str, file_path: str) -> str:
 
     file_lines = file_text.splitlines()
 
-    # Strategy A — fix offsets
+    # ── Step 0: inject missing file headers ──────────────────────────────────
+    patch = _inject_file_headers(patch, file_path)
+
+    # ── Strategy A: fix offsets ───────────────────────────────────────────────
     try:
         fixed = _fix_offsets(patch, file_lines)
         if fixed != patch:
@@ -57,7 +63,7 @@ def repair_diff(patch: str, file_path: str) -> str:
     except Exception as exc:
         logger.debug(f"[DiffRepair] Strategy A failed: {exc}")
 
-    # Strategy B — full rebuild from intended changes
+    # ── Strategy B: full rebuild from intended changes ────────────────────────
     try:
         rebuilt = _rebuild_from_intent(patch, file_lines, file_path)
         if rebuilt:
@@ -66,8 +72,27 @@ def repair_diff(patch: str, file_path: str) -> str:
     except Exception as exc:
         logger.debug(f"[DiffRepair] Strategy B failed: {exc}")
 
-    logger.warning("[DiffRepair] Both strategies failed — using original patch")
+    logger.warning("[DiffRepair] All strategies failed — using original patch")
     return patch
+
+
+def _inject_file_headers(patch: str, file_path: str) -> str:
+    """
+    If the patch starts with @@ (missing --- / +++ headers), prepend them.
+    git apply requires file headers before the first hunk.
+    """
+    stripped = patch.lstrip()
+    if not stripped.startswith("@@"):
+        return patch   # headers already present
+
+    # Derive a sensible relative path from just the filename
+    # (normalise_diff_paths will fix it to the real relative path afterwards
+    #  if called in the right order — but we need *something* here so git
+    #  doesn't reject the patch before we even get to apply it)
+    fname = Path(file_path).name
+    header = f"--- a/{fname}\n+++ b/{fname}\n"
+    logger.info(f"[DiffRepair] Injected missing file headers for {fname}")
+    return header + stripped
 
 
 def normalise_diff_paths(patch: str, repo_root: str, file_path: str) -> str:
