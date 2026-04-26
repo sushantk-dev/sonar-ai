@@ -71,7 +71,7 @@ def validate(state: AgentState) -> AgentState:
     patch_hunks = normalise_diff_paths(patch_hunks, repo_path, file_path)
 
     # ── Step 2: Apply diff ────────────────────────────────────────────────────
-    diff_ok, apply_error = _apply_diff(repo_path, patch_hunks)
+    diff_ok, apply_error = _apply_diff(repo_path, patch_hunks, file_path)
     result["diff_ok"] = diff_ok
 
     if not diff_ok:
@@ -115,16 +115,17 @@ def validate(state: AgentState) -> AgentState:
 
 # ── Diff application ──────────────────────────────────────────────────────────
 
-def _apply_diff(repo_path: str, patch_hunks: str) -> tuple[bool, str]:
+def _apply_diff(repo_path: str, patch_hunks: str, file_path: str = "") -> tuple[bool, str]:
     """
     Apply a unified diff using a pure-Python in-memory applier (primary path).
     Falls back to git apply if the Python applier fails.
 
-    Pure-Python approach is immune to all git apply formatting quirks:
-    corrupt patch, wrong encoding, CRLF issues, header path mismatches, etc.
+    file_path: absolute path to the target file on disk (from state["file_path"]).
+               Passed directly to the Python applier so it never has to guess the
+               path from the diff header (which is always repo-relative).
     """
     # ── Primary: pure-Python in-memory apply ─────────────────────────────────
-    ok, error = _apply_diff_python(patch_hunks)
+    ok, error = _apply_diff_python(patch_hunks, file_path)
     if ok:
         return True, ""
 
@@ -134,12 +135,18 @@ def _apply_diff(repo_path: str, patch_hunks: str) -> tuple[bool, str]:
     return _apply_diff_git(repo_path, patch_hunks)
 
 
-def _apply_diff_python(patch_hunks: str) -> tuple[bool, str]:
+def _apply_diff_python(patch_hunks: str, file_path: str = "") -> tuple[bool, str]:
     """
     Pure-Python unified diff applier.
 
     Algorithm:
-      1. Parse the patch to find the target file path (from +++ line).
+      1. Resolve the target file:
+         a. Use ``file_path`` (absolute, from state) if provided and exists.
+         b. Otherwise parse the +++ line from the patch and try:
+            - as an absolute path
+            - joined with cwd
+         This multi-strategy resolution means the applier never fails just
+         because the diff header contains a repo-relative path.
       2. Parse each @@ hunk into (old_start, removed_lines, added_lines).
       3. Load the file into a list of lines.
       4. For each hunk (in reverse order so earlier hunks don't shift later offsets):
@@ -160,22 +167,44 @@ def _apply_diff_python(patch_hunks: str) -> tuple[bool, str]:
             return False
         return all(f.strip() == p.strip() for f, p in zip(file_block, patch_block))
 
-    # ── 1. Extract file path from +++ line ───────────────────────────────────
-    file_path: Optional[str] = None
-    for line in patch_hunks.splitlines():
-        if line.startswith("+++ "):
-            raw = line[4:].strip()
-            # Strip leading b/ prefix (unified diff convention)
-            raw = _re.sub(r"^[ab]/", "", raw)
-            file_path = raw
-            break
+    # ── 1. Resolve the target file ───────────────────────────────────────────
+    target: Optional[Path] = None
 
-    if not file_path:
-        return False, "No +++ line found in patch — cannot determine target file"
+    # Strategy A: use the absolute path already known from state (preferred)
+    if file_path:
+        candidate = Path(file_path)
+        if candidate.exists():
+            target = candidate
+        else:
+            logger.warning(f"[Validator] state file_path does not exist: {file_path}")
 
-    target = Path(file_path)
-    if not target.exists():
-        return False, f"Target file does not exist: {file_path}"
+    # Strategy B: parse from +++ line and try multiple resolutions
+    if target is None:
+        parsed_path: Optional[str] = None
+        for line in patch_hunks.splitlines():
+            if line.startswith("+++ "):
+                raw = line[4:].strip()
+                raw = _re.sub(r"^[ab]/", "", raw)  # strip b/ prefix
+                parsed_path = raw
+                break
+
+        if not parsed_path:
+            return False, "No +++ line found in patch and no file_path provided"
+
+        for candidate_path in [
+            Path(parsed_path),                    # as-is (works if absolute)
+            Path.cwd() / parsed_path,             # relative to cwd
+        ]:
+            if candidate_path.exists():
+                target = candidate_path
+                logger.info(f"[Validator] Resolved +++ path → {target}")
+                break
+
+        if target is None:
+            return False, (
+                f"Target file does not exist: {parsed_path!r}. "
+                "Ensure state['file_path'] is set to the absolute path on disk."
+            )
 
     # ── 2. Parse hunks ────────────────────────────────────────────────────────
     HUNK_HDR = _re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
