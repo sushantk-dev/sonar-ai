@@ -196,7 +196,6 @@ def _fix_offsets(patch: str, file_lines: list[str]) -> str:
             anchor = _find_sequence(ctx, file_stripped) if ctx else None
         else:
             anchor = _find_sequence(removed, file_stripped)
-
         if anchor is None:
             result.append(line)
             result.extend(hunk_body)
@@ -226,25 +225,44 @@ def _find_sequence(needles: list[str], haystack: list[str]) -> Optional[int]:
 # ── Strategy B: full rebuild ──────────────────────────────────────────────────
 
 def _rebuild_from_intent(patch: str, file_lines: list[str], file_path: str) -> Optional[str]:
-    """Apply the intended +/- changes in memory and produce a fresh diff."""
+    """
+    Apply each hunk's intended changes in memory and produce a fresh unified diff.
+
+    Handles three hunk types:
+      - Remove + add  : find removed lines, replace with added lines
+      - Remove only   : find removed lines, delete them
+      - Add only      : find the context lines before/after, insert after the
+                        last pre-insertion context line (pure insertion hunk)
+    """
     hunks = _parse_hunks(patch)
     if not hunks:
         return None
 
     file_stripped = [l.rstrip() for l in file_lines]
     new_lines = list(file_lines)
-    offset = 0
+    offset = 0  # cumulative shift from previous hunks
 
-    for removed, added in hunks:
-        if not removed:
-            continue
-        pos = _find_sequence(removed, file_stripped)
-        if pos is None:
-            logger.debug(f"[DiffRepair-B] Cannot locate: {removed[:2]}")
-            return None
-        idx = pos - 1 + offset
-        new_lines[idx : idx + len(removed)] = added
-        offset += len(added) - len(removed)
+    for removed, added, context_before, context_after in hunks:
+        if removed:
+            # Locate the lines to remove
+            pos = _find_sequence(removed, file_stripped)
+            if pos is None:
+                logger.debug(f"[DiffRepair-B] Cannot locate removed: {removed[:2]}")
+                return None
+            idx = pos - 1 + offset
+            new_lines[idx : idx + len(removed)] = added
+            offset += len(added) - len(removed)
+
+        elif added:
+            # Pure insertion: anchor using context_before (lines just before insertion)
+            insert_after = _find_insertion_point(context_before, context_after, file_stripped)
+            if insert_after is None:
+                logger.debug(f"[DiffRepair-B] Cannot anchor insertion for: {added[:2]}")
+                # Skip this hunk — don't fail the whole rebuild for a missing import
+                continue
+            idx = insert_after + offset  # insert_after is 0-based (insert AFTER this index)
+            new_lines[idx:idx] = added
+            offset += len(added)
 
     rel_path = Path(file_path).name
     diff = list(difflib.unified_diff(
@@ -259,23 +277,75 @@ def _rebuild_from_intent(patch: str, file_lines: list[str], file_path: str) -> O
     return "\n".join(diff) + "\n"
 
 
-def _parse_hunks(patch: str) -> list[tuple[list[str], list[str]]]:
-    """Parse a unified diff into (removed, added) line lists per hunk."""
-    hunks: list[tuple[list[str], list[str]]] = []
+def _find_insertion_point(
+    context_before: list[str],
+    context_after: list[str],
+    file_stripped: list[str],
+) -> Optional[int]:
+    """
+    Find the 0-based index after which to insert lines.
+    Tries context_before first (insert after the last pre-insertion context line),
+    then context_after (insert before the first post-insertion context line).
+    Returns 0-based index to insert after, or None.
+    """
+    if context_before:
+        # Find the last context_before line in the file and insert after it
+        for anchor in reversed(context_before):
+            if not anchor.strip():
+                continue
+            for i in range(len(file_stripped) - 1, -1, -1):
+                if file_stripped[i] == anchor:
+                    return i + 1  # insert after index i
+    if context_after:
+        # Insert before the first context_after line
+        anchor = next((l for l in context_after if l.strip()), None)
+        if anchor:
+            for i, line in enumerate(file_stripped):
+                if line == anchor:
+                    return i  # insert before index i = insert after index i-1
+    return None
+
+
+def _parse_hunks(
+    patch: str,
+) -> list[tuple[list[str], list[str], list[str], list[str]]]:
+    """
+    Parse a unified diff into (removed, added, context_before, context_after) tuples.
+
+    context_before: unchanged lines (starting with ' ') before the first +/- line
+    context_after:  unchanged lines after the last +/- line
+    """
+    hunks: list[tuple[list[str], list[str], list[str], list[str]]] = []
     lines = patch.splitlines()
     i = 0
     while i < len(lines):
         if _HUNK_RE.match(lines[i]):
-            removed, added = [], []
+            removed: list[str] = []
+            added: list[str] = []
+            context_before: list[str] = []
+            context_after: list[str] = []
+            seen_change = False
             i += 1
+            hunk_body: list[str] = []
             while i < len(lines) and not _HUNK_RE.match(lines[i]) and not _FILE_HDR.match(lines[i]):
-                l = lines[i]
+                hunk_body.append(lines[i])
+                i += 1
+
+            for l in hunk_body:
                 if l.startswith("-"):
                     removed.append(l[1:].rstrip())
+                    seen_change = True
                 elif l.startswith("+"):
                     added.append(l[1:])
-                i += 1
-            hunks.append((removed, added))
+                    seen_change = True
+                elif l.startswith(" "):
+                    ctx_line = l[1:].rstrip()
+                    if not seen_change:
+                        context_before.append(ctx_line)
+                    else:
+                        context_after.append(ctx_line)
+
+            hunks.append((removed, added, context_before, context_after))
         else:
             i += 1
     return hunks
