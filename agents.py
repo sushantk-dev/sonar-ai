@@ -11,15 +11,16 @@ from __future__ import annotations
 import json
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_google_vertexai import ChatVertexAI
 from loguru import logger
 
-from config import settings
-from prompts import planner_prompt, generator_prompt, critic_prompt
-from state import AgentState, PlannerOutput, GeneratorOutput, CriticOutput
+from sonar_ai.config import settings
+from sonar_ai.prompts import planner_prompt, generator_prompt, critic_prompt
+from sonar_ai.state import AgentState, PlannerOutput, GeneratorOutput, CriticOutput
 
 
 # ── LLM factory ──────────────────────────────────────────────────────────────
@@ -159,14 +160,17 @@ def generate_fix(state: AgentState) -> AgentState:
     llm = _make_llm(temperature=0.3)
     chain = generator_prompt | llm
 
-    # Compute relative file path for diff header
+    # Compute relative file path for diff header — always forward slashes (POSIX)
+    # so the diff header is valid on Windows too
     repo_root = state.get("repo_local_path", "")
     abs_path = state.get("file_path", "")
     try:
-        from pathlib import Path
-        rel_path = str(Path(abs_path).relative_to(repo_root)) if repo_root else abs_path
+        rel_path = Path(abs_path).relative_to(repo_root).as_posix() if repo_root else abs_path
     except ValueError:
-        rel_path = abs_path
+        rel_path = Path(abs_path).name
+
+    # Give the model the full numbered file so it can produce exact offsets
+    full_file_context = _numbered_file(abs_path)
 
     prompt_vars = {
         "rule_key": issue["rule_key"],
@@ -175,7 +179,7 @@ def generate_fix(state: AgentState) -> AgentState:
         "file_path": rel_path,
         "flagged_line": issue["line"],
         "strategy": planner_out.get("strategy", ""),
-        "method_context": state.get("method_context", ""),
+        "method_context": full_file_context or state.get("method_context", ""),
         "retry_feedback": retry_feedback,
     }
 
@@ -246,3 +250,32 @@ def critique_fix(state: AgentState) -> AgentState:
             logger.warning(f"[Critic] concern: {concern}")
 
     return {**state, "critic_output": parsed}
+
+
+# ── File helpers ──────────────────────────────────────────────────────────────
+
+def _numbered_file(file_path: str, max_lines: int = 300) -> str:
+    """
+    Return the full file content with 1-based line numbers prepended.
+    Capped at max_lines to stay within context limits.
+    The model uses these numbers directly for @@ hunk offset calculation.
+    """
+    if not file_path:
+        return ""
+    try:
+        lines = Path(file_path).read_text(encoding="utf-8", errors="replace").splitlines()
+        if len(lines) > max_lines:
+            # Keep first 150 and last 50 lines with a gap marker
+            head = lines[:150]
+            tail = lines[-50:]
+            gap = len(lines) - 200
+            numbered = (
+                "\n".join(f"{i+1:4d}  {l}" for i, l in enumerate(head))
+                + f"\n... ({gap} lines omitted) ...\n"
+                + "\n".join(f"{len(lines)-49+i:4d}  {l}" for i, l in enumerate(tail))
+            )
+        else:
+            numbered = "\n".join(f"{i+1:4d}  {l}" for i, l in enumerate(lines))
+        return f"// {Path(file_path).name} — {len(lines)} lines total\n" + numbered
+    except OSError:
+        return ""

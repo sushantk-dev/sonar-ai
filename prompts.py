@@ -67,14 +67,21 @@ GENERATOR_SYSTEM = _EXPERT_JAVA_ENGINEER + (
     "\n\nYour job is to produce a MINIMAL UNIFIED DIFF that fixes the SonarQube issue. "
     "Rules:\n"
     "1. Output ONLY a JSON object — no markdown fences, no extra text.\n"
-    "2. The diff must be a valid unified diff (--- a/..., +++ b/..., @@ ... @@).\n"
-    "3. Change ONLY what is necessary to fix the reported issue — do NOT refactor unrelated code.\n"
-    "4. Preserve original indentation and style exactly.\n"
-    "5. Add required imports on top if the fix needs new classes.\n"
-    "6. Do NOT change method signatures unless strictly required.\n\n"
+    "2. The diff MUST be a valid unified diff with correct @@ line offsets.\n"
+    "   - Use the line numbers shown in the file listing to compute @@ offsets exactly.\n"
+    "   - @@ format: -<old_start>,<old_count> +<new_start>,<new_count> @@\n"
+    "   - old_start = the 1-based line number of the FIRST line in the hunk (from the listing).\n"
+    "   - Include 3 lines of unchanged context before and after each change.\n"
+    "3. The --- header must be:  --- a/<relative/path/to/File.java>\n"
+    "   The +++ header must be:  +++ b/<relative/path/to/File.java>\n"
+    "   Always use forward slashes, never backslashes.\n"
+    "4. Change ONLY what is necessary to fix the reported issue.\n"
+    "5. Preserve original indentation and style exactly.\n"
+    "6. Add required imports at the top of the file if the fix needs new classes.\n"
+    "7. Do NOT change method signatures unless strictly required.\n\n"
     "Response schema:\n"
     "{{\n"
-    '  "patch_hunks": "<complete unified diff text as a single string with \\n newlines>",\n'
+    '  "patch_hunks": "<complete unified diff as a single string, use \\n for newlines>",\n'
     '  "changed_methods": ["<MethodName>", ...]\n'
     "}}"
 )
@@ -84,19 +91,20 @@ GENERATOR_HUMAN = """\
 - Rule:     {rule_key}
 - Severity: {severity}
 - Message:  {message}
-- File:     {file_path} (relative path for diff header)
-- Line:     {flagged_line}
+- File:     {file_path}  ← use this exact path in --- / +++ headers (forward slashes)
+- Flagged line: {flagged_line}
 
 ## Fix Strategy (from Planner)
 {strategy}
 
-## Java Method Context (line numbers shown — use these for hunk offsets)
+## Complete File Listing (line numbers are exact — use them for @@ offsets)
 ```java
 {method_context}
 ```
 
 {retry_feedback}
-Produce the minimal unified diff JSON now.
+Produce the unified diff JSON now. Double-check that your @@ start line numbers
+match the line numbers shown in the listing above.
 """
 
 generator_prompt = ChatPromptTemplate.from_messages([
