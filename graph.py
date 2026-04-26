@@ -13,13 +13,13 @@ from typing import Literal
 from loguru import logger
 from langgraph.graph import StateGraph, END
 
-from sonar_ai.state import AgentState, SonarIssue
-from sonar_ai.config import settings
-from sonar_ai.parser import parse_sonar_report, load_rule_kb
-from sonar_ai.repo_loader import clone_repo, create_fix_branch, resolve_java_file, extract_method_context
-from sonar_ai.agents import plan_fix, generate_fix, critique_fix
-from sonar_ai.validator import validate
-from sonar_ai.deliver import deliver
+from state import AgentState, SonarIssue
+from config import settings
+from parser import parse_sonar_report, load_rule_kb
+from repo_loader import clone_repo, create_fix_branch, resolve_java_file, extract_method_context
+from agents import plan_fix, generate_fix, critique_fix
+from validator import validate
+from deliver import deliver
 
 
 # ── Node: ingest ──────────────────────────────────────────────────────────────

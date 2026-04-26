@@ -1,14 +1,18 @@
 """
 SonarAI — LLM Prompt Templates
-Chain-of-thought prompts for the three-LLM pipeline:
-  LLM·1  Planner  — analyse the issue, reason about a fix strategy
-  LLM·2  Generator — produce a unified diff patch
-  LLM·3  Critic   — adversarially review the generated patch
+
+NOTE: All { } in system message strings that are NOT template variables must be
+escaped as {{ }} — LangChain's ChatPromptTemplate treats any single { } as a
+variable placeholder and raises KeyError if the variable is not supplied.
 """
 
 from __future__ import annotations
 
-from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
+from langchain_core.prompts import (
+    ChatPromptTemplate,
+    SystemMessagePromptTemplate,
+    HumanMessagePromptTemplate,
+)
 
 # ── Shared system persona ─────────────────────────────────────────────────────
 
@@ -25,11 +29,11 @@ PLANNER_SYSTEM = _EXPERT_JAVA_ENGINEER + (
     "\n\nYour job is to ANALYSE a SonarQube issue and produce a structured remediation plan. "
     "Think step-by-step before committing to a strategy. "
     "Respond ONLY with a JSON object — no markdown fences, no extra text — matching this schema:\n"
-    "{\n"
-    '  "reasoning": "<chain-of-thought explanation, ≤300 words>",\n'
-    '  "strategy": "<concise 1–3 sentence description of the exact code change required>",\n'
-    '  "confidence": <float 0.0–1.0 reflecting how certain you are the fix is safe and complete>\n'
-    "}"
+    "{{\n"
+    '  "reasoning": "<chain-of-thought explanation, up to 300 words>",\n'
+    '  "strategy": "<concise 1-3 sentence description of the exact code change required>",\n'
+    '  "confidence": <float 0.0-1.0 reflecting how certain you are the fix is safe and complete>\n'
+    "}}"
 )
 
 PLANNER_HUMAN = """\
@@ -69,10 +73,10 @@ GENERATOR_SYSTEM = _EXPERT_JAVA_ENGINEER + (
     "5. Add required imports on top if the fix needs new classes.\n"
     "6. Do NOT change method signatures unless strictly required.\n\n"
     "Response schema:\n"
-    "{\n"
+    "{{\n"
     '  "patch_hunks": "<complete unified diff text as a single string with \\n newlines>",\n'
     '  "changed_methods": ["<MethodName>", ...]\n'
-    "}"
+    "}}"
 )
 
 GENERATOR_HUMAN = """\
@@ -112,10 +116,10 @@ CRITIC_SYSTEM = _EXPERT_JAVA_ENGINEER + (
     "- Validity: is the unified diff syntactically well-formed with correct line offsets?\n"
     "- Style: does it match the surrounding code style (indentation, imports)?\n\n"
     "Respond ONLY with a JSON object:\n"
-    "{\n"
+    "{{\n"
     '  "approved": <true|false>,\n'
     '  "concerns": ["<concern 1>", "<concern 2>", ...]\n'
-    "}\n"
+    "}}\n"
     "If approved=true, concerns may be empty or contain minor notes. "
     "If approved=false, concerns MUST explain exactly what is wrong."
 )

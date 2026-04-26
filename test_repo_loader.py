@@ -1,11 +1,11 @@
-"""Tests for sonar_ai.repo_loader (offline — no git clone required)."""
+"""Tests for repo_loader (offline — no git clone required)."""
 
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from sonar_ai.repo_loader import resolve_java_file, extract_method_context, _repo_name_from_url, _inject_token
+from repo_loader import resolve_java_file, extract_method_context, _repo_name_from_url, _inject_token
 
 
 SAMPLE_JAVA = """\

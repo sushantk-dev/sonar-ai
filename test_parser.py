@@ -1,4 +1,4 @@
-"""Tests for sonar_ai.parser."""
+"""Tests for parser."""
 
 import json
 import tempfile
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sonar_ai.parser import parse_sonar_report, load_rule_kb
+from parser import parse_sonar_report, load_rule_kb
 
 
 SAMPLE_REPORT = {

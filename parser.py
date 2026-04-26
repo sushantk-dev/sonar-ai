@@ -11,7 +11,7 @@ from typing import Any
 
 from loguru import logger
 
-from sonar_ai.state import SonarIssue
+from state import SonarIssue
 
 # Issues with these statuses are not actionable
 _SKIP_STATUSES = {"WONTFIX", "FALSE_POSITIVE", "CLOSED", "RESOLVED"}
@@ -95,15 +95,28 @@ def load_rule_kb(kb_path: str | Path | None = None) -> dict[str, Any]:
     """
     Load the rule knowledge base JSON.
 
-    Args:
-        kb_path: Path to rule_kb.json. Defaults to data/rule_kb.json relative to this file.
+    Search order when kb_path is not specified:
+    1. data/rule_kb.json relative to this source file's parent  (sonar_ai/../data/)
+    2. data/rule_kb.json relative to cwd  (handles flat layouts and Windows path quirks)
+    3. rule_kb.json in the same directory as this file (last resort)
 
     Returns:
         Dict mapping rule_key → rule metadata dict.
     """
     if kb_path is None:
-        # resolve relative to this source file
-        kb_path = Path(__file__).parent.parent / "data" / "rule_kb.json"
+        candidates = [
+            Path(__file__).resolve().parent.parent / "data" / "rule_kb.json",
+            Path.cwd() / "data" / "rule_kb.json",
+            Path(__file__).resolve().parent / "rule_kb.json",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                kb_path = candidate
+                break
+        else:
+            tried = "\n  ".join(str(c) for c in candidates)
+            logger.warning(f"Rule KB not found. Tried:\n  {tried}\nReturning empty KB.")
+            return {}
 
     kb_path = Path(kb_path)
     if not kb_path.exists():

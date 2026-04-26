@@ -15,8 +15,8 @@ from typing import Optional
 
 from loguru import logger
 
-from sonar_ai.config import settings
-from sonar_ai.state import AgentState, ValidationResult
+from config import settings
+from state import AgentState, ValidationResult
 
 
 # ── Public entry point ────────────────────────────────────────────────────────

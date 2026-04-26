@@ -3,9 +3,12 @@ SonarAI — Configuration
 All settings loaded from environment variables or .env file via Pydantic Settings.
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
+
+import tempfile as _tempfile
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -18,8 +21,8 @@ class Settings(BaseSettings):
     gcp_project: str = Field(..., description="GCP project ID for Vertex AI")
     gcp_location: str = Field(default="us-central1", description="GCP region")
     vertex_model: str = Field(
-        default="claude-sonnet-4-5@20251001",
-        description="Vertex AI model (Claude or Gemini fallback)",
+        default="gemini-2.5-flash",
+        description="Vertex AI model (Gemini fallback)",
     )
     vertex_fallback_model: str = Field(
         default="gemini-1.5-pro-002",
@@ -49,7 +52,7 @@ class Settings(BaseSettings):
     max_critic_retries: int = Field(default=1, description="Max LLM fix retry loops")
     compile_timeout: int = Field(default=120, description="mvn compile timeout seconds")
     test_timeout: int = Field(default=180, description="mvn test timeout seconds")
-    clone_dir: str = Field(default="/tmp/sonar-ai-repos", description="Base dir for cloned repos")
+    clone_dir: str = Field(default_factory=lambda: str(Path(_tempfile.gettempdir()) / "sonar-ai-repos"), description="Base dir for cloned repos")
     escalation_dir: str = Field(default="escalations", description="Dir for escalation markdown files")
 
     # ── Confidence thresholds ─────────────────────────────────────────────────

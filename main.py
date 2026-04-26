@@ -21,7 +21,7 @@ logger.add(
     level="INFO",
 )
 logger.add(
-    "sonar_ai.log",
+    "log",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {name}:{line} | {message}",
     level="DEBUG",
     rotation="10 MB",
@@ -54,7 +54,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from sonar_ai.graph import run_pipeline
+    from graph import run_pipeline
 
     final_state = run_pipeline(
         sonar_report_path=args.report,

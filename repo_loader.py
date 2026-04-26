@@ -21,7 +21,7 @@ except ImportError:
     _JAVALANG_AVAILABLE = False
     logger.warning("javalang not available — will use raw line slices only")
 
-from sonar_ai.state import SonarIssue
+from state import SonarIssue
 
 
 # ── Repo cloning ──────────────────────────────────────────────────────────────
@@ -51,10 +51,36 @@ def clone_repo(
     if local_path.exists():
         logger.info(f"Repo already cloned at {local_path}, reusing")
         repo = git.Repo(local_path)
-        repo.remotes.origin.fetch()
+
+        # Ensure the fetch refspec is set — it can be missing on clones that
+        # were made with certain GitPython versions or manually initialised.
+        # git config --add remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+        with repo.config_writer() as cw:
+            section = 'remote "origin"'
+            cw.set_value(section, "url", auth_url)
+            # Only add the refspec if not already present
+            try:
+                existing = cw.get_value(section, "fetch")
+            except Exception:
+                existing = ""
+            if "+refs/heads/*" not in str(existing):
+                cw.add_value(section, "fetch", "+refs/heads/*:refs/remotes/origin/*")
+
+        # Only fetch if the target SHA is not already present locally
+        try:
+            repo.commit(commit_sha)
+            logger.info(f"Commit {commit_sha[:12]} already present locally — skipping fetch")
+        except (git.BadName, ValueError):
+            logger.info(f"Fetching from origin to get commit {commit_sha[:12]}")
+            repo.remotes.origin.fetch()
     else:
         logger.info(f"Cloning {repo_url} → {local_path}")
         repo = git.Repo.clone_from(auth_url, local_path)
+
+    # Set push URL with token on origin (handles both new clones and reused ones)
+    with repo.config_writer() as cw:
+        cw.set_value('remote "origin"', "pushurl", auth_url)
+    logger.debug("[Repo] Push URL configured on origin")
 
     logger.info(f"Checking out commit {commit_sha}")
     repo.git.checkout(commit_sha)

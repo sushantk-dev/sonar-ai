@@ -17,9 +17,9 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_google_vertexai import ChatVertexAI
 from loguru import logger
 
-from sonar_ai.config import settings
-from sonar_ai.prompts import planner_prompt, generator_prompt, critic_prompt
-from sonar_ai.state import AgentState, PlannerOutput, GeneratorOutput, CriticOutput
+from config import settings
+from prompts import planner_prompt, generator_prompt, critic_prompt
+from state import AgentState, PlannerOutput, GeneratorOutput, CriticOutput
 
 
 # ── LLM factory ──────────────────────────────────────────────────────────────
