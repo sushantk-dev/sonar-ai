@@ -49,6 +49,9 @@ def repair_diff(patch: str, file_path: str) -> str:
     # 0b — fix malformed @@ syntax (spaces after commas, missing spaces, etc.)
     patch = _fix_hunk_headers(patch)
 
+    # 0c — fix context lines missing their leading space prefix
+    patch = _fix_context_prefixes(patch)
+
     # A — fix wrong line offsets
     try:
         fixed = _fix_offsets(patch, file_lines)
@@ -213,6 +216,61 @@ def _clean_hunk_suffix(suffix: str) -> str:
     if cleaned.strip():
         return " " + cleaned.strip()
     return ""
+
+
+# ── Step 0c: fix missing context line prefixes ────────────────────────────────
+
+_VALID_PREFIX = re.compile(r"^[ +\-\\]")  # space, +, -, or \ (no-newline marker)
+
+
+def _fix_context_prefixes(patch: str) -> str:
+    """
+    The LLM sometimes emits context lines inside hunks WITHOUT the required
+    leading space, producing "corrupt patch" errors.
+
+    Example (bad):
+        @@ -39,5 +39,6 @@
+                public String processTemplateFromFile(...) {    ← no leading space!
+                    String templateContent = ...;              ← no leading space!
+        -           return processTemplate(...);
+        +           String result = processTemplate(...);
+
+    This function adds a leading space to any hunk body line that:
+      - is not a --- / +++ header
+      - is not a @@ line
+      - does not already start with ' ', '+', '-', or '\\'
+    """
+    in_hunk = False
+    out = []
+    changed = False
+
+    for line in patch.splitlines(keepends=True):
+        stripped = line.rstrip("\r\n")
+
+        if stripped.startswith("--- ") or stripped.startswith("+++ "):
+            in_hunk = False
+            out.append(line)
+            continue
+
+        if stripped.startswith("@@"):
+            in_hunk = True
+            out.append(line)
+            continue
+
+        if in_hunk and stripped != "" and not _VALID_PREFIX.match(stripped):
+            # This context line is missing its leading space — add one
+            fixed = " " + line  # preserve original line ending
+            logger.info(
+                f"[DiffRepair] Step 0c: added missing context prefix: {stripped[:60]!r}"
+            )
+            out.append(fixed)
+            changed = True
+        else:
+            out.append(line)
+
+    if changed:
+        logger.info("[DiffRepair] Step 0c: fixed missing context line prefixes")
+    return "".join(out)
 
 
 # ── Strategy A: offset correction ────────────────────────────────────────────

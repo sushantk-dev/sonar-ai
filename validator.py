@@ -211,6 +211,15 @@ def _apply_diff_python(patch_hunks: str) -> tuple[bool, str]:
                 ctx = line[1:] if line.startswith(" ") else ""
                 current_removed.append(ctx)
                 current_added.append(ctx)
+            elif line.startswith("\\"):
+                # "\ No newline at end of file" — ignore
+                pass
+            else:
+                # No prefix at all — LLM forgot the leading space on a context line.
+                # Treat as context (both removed and added) so the hunk still applies.
+                logger.debug(f"[Validator] No-prefix context line treated as context: {line[:60]!r}")
+                current_removed.append(line)
+                current_added.append(line)
 
     if in_hunk:
         hunks.append((current_old_start, current_removed, current_added))
