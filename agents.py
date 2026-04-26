@@ -56,6 +56,38 @@ def _parse_json_response(raw: str, node_name: str) -> dict[str, Any]:
         raise
 
 
+def _clean_patch_hunks(patch: str) -> str:
+    """
+    Strip markdown code fences that the LLM embeds INSIDE the patch_hunks JSON value.
+
+    The LLM frequently returns patch_hunks like:
+        "patch_hunks": "```diff\\n--- a/Foo.java\\n+++ b/Foo.java\\n...\\n```"
+
+    After JSON parsing the string value is:
+        ```diff\n--- a/Foo.java\n+++ b/Foo.java\n...\n```
+
+    This function strips those fences so the applier receives a clean unified diff.
+    Also handles:
+      - ```java / ```text / ``` (no language tag)
+      - Windows \\r\\n literal sequences (LLM escaping artefact)
+      - Stray leading/trailing whitespace lines
+    """
+    if not patch:
+        return patch
+
+    # Replace literal \r\n and \n escape sequences that the LLM sometimes emits
+    # inside a JSON string value (double-escaped newlines)
+    patch = patch.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+    # Strip any opening fence: ```diff, ```java, ```text, ```patch, ``` etc.
+    patch = re.sub(r"^```[a-zA-Z]*\s*\n?", "", patch.lstrip(), flags=re.MULTILINE)
+
+    # Strip any closing fence (``` possibly preceded by whitespace on its own line)
+    patch = re.sub(r"\n?^```\s*$", "", patch.rstrip(), flags=re.MULTILINE)
+
+    return patch.strip()
+
+
 # ── Node helpers ──────────────────────────────────────────────────────────────
 
 def _rule_kb_entry_text(state: AgentState) -> str:
@@ -193,6 +225,16 @@ def generate_fix(state: AgentState) -> AgentState:
     parsed: GeneratorOutput = _parse_json_response(raw, "Generator")  # type: ignore[assignment]
     parsed.setdefault("patch_hunks", "")
     parsed.setdefault("changed_methods", [])
+
+    # Strip markdown fences that the LLM embeds INSIDE the patch_hunks string value
+    raw_patch = parsed["patch_hunks"]
+    cleaned_patch = _clean_patch_hunks(raw_patch)
+    if cleaned_patch != raw_patch:
+        logger.info(
+            f"[Generator] Stripped markdown fences from patch_hunks "
+            f"(was {len(raw_patch)} chars, now {len(cleaned_patch)} chars)"
+        )
+    parsed["patch_hunks"] = cleaned_patch
 
     logger.info(
         f"[Generator] patch_lines={len(parsed['patch_hunks'].splitlines())} "

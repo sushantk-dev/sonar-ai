@@ -40,6 +40,9 @@ def repair_diff(patch: str, file_path: str) -> str:
 
     file_lines = file_text.splitlines()
 
+    # -1 — strip markdown code fences that the LLM embeds inside the diff string
+    patch = _strip_markdown_fences(patch)
+
     # 0a — inject missing file headers (patch starts with @@)
     patch = _inject_file_headers(patch, file_path)
 
@@ -90,6 +93,35 @@ def normalise_diff_paths(patch: str, repo_root: str, file_path: str) -> str:
         else:
             out.append(line)
     return "".join(out)
+
+
+# ── Step -1: strip markdown code fences ──────────────────────────────────────
+
+def _strip_markdown_fences(patch: str) -> str:
+    """
+    Remove markdown code fences that the LLM embeds inside the diff string.
+
+    Handles all of:
+      ```diff\\n...\\n```        (with language tag)
+      ```\\n...\\n```            (no language tag)
+      literal \\n in the string (double-escaped by JSON serialisation)
+    """
+    if not patch:
+        return patch
+
+    # Unescape literal \\n / \\r\\n sequences (LLM JSON artefact)
+    patch = patch.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+    # Opening fence: ```diff, ```java, ```patch, ```text, ``` etc.
+    patch = re.sub(r"^```[a-zA-Z]*\s*\n?", "", patch.lstrip(), flags=re.MULTILINE)
+
+    # Closing fence: ``` on its own line
+    patch = re.sub(r"\n?^```\s*$", "", patch.rstrip(), flags=re.MULTILINE)
+
+    stripped = patch.strip()
+    if stripped != patch:
+        logger.info("[DiffRepair] Step -1: stripped markdown code fences from patch")
+    return stripped
 
 
 # ── Step 0a: inject missing file headers ─────────────────────────────────────
