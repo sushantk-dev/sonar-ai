@@ -1,13 +1,19 @@
 """
 SonarAI — Iteration 2 Tests
 Tests for rag_store.py and sonar_rescan.py
+
+Fixes vs original:
+  - Removed importlib.reload() calls that were resetting module-level globals
+    (_collection, _embed_fn) and breaking @patch decorators.
+  - Now patches rag_store._embed and rag_store._get_collection directly,
+    which is the correct granularity for these unit tests.
 """
 
 from __future__ import annotations
 
 import json
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 
 # ── RAG Store tests ───────────────────────────────────────────────────────────
@@ -25,21 +31,20 @@ class TestRagStore(unittest.TestCase):
         }
         return coll
 
-    @patch("rag_store._get_embed_fn")
+    @patch("rag_store._embed", return_value=[0.1] * 768)
     @patch("rag_store._get_collection")
     def test_retrieve_empty_collection(self, mock_col, mock_embed):
-        """Returns [] when collection is empty."""
+        """Returns [] when collection is empty (count=0, query returns empty lists)."""
         mock_col.return_value = self._make_mock_collection(count=0)
-        mock_embed.return_value = lambda text: [0.1] * 768
 
-        from rag_store import retrieve_similar_fixes
-        result = retrieve_similar_fixes("java:S2259", "context", "message")
+        import rag_store
+        result = rag_store.retrieve_similar_fixes("java:S2259", "context", "message")
         self.assertEqual(result, [])
 
-    @patch("rag_store._get_embed_fn")
+    @patch("rag_store._embed", return_value=[0.1] * 768)
     @patch("rag_store._get_collection")
     def test_retrieve_returns_results_above_threshold(self, mock_col, mock_embed):
-        """Returns results with similarity >= 0.3."""
+        """Returns results with similarity >= 0.3 (distance=0.2 → similarity=0.8)."""
         coll = self._make_mock_collection(count=2)
         coll.query.return_value = {
             "documents": [["doc1"]],
@@ -51,48 +56,47 @@ class TestRagStore(unittest.TestCase):
                 "file_name": "Foo.java",
                 "message": "NPE risk",
             }]],
-            "distances": [[0.2]],  # similarity = 1 - 0.2 = 0.8
+            "distances": [[0.2]],  # similarity = 1 - 0.2 = 0.8 → above 0.3 threshold
         }
         mock_col.return_value = coll
-        mock_embed.return_value = MagicMock(embed_query=lambda t: [0.1] * 768)
 
-        # Patch the _embed function directly
-        with patch("rag_store._embed", return_value=[0.1] * 768):
-            from rag_store import retrieve_similar_fixes
-            # Reimport after patching
-            import importlib, rag_store
-            importlib.reload(rag_store)
-            result = rag_store.retrieve_similar_fixes("java:S2259", "context", "message")
-            # Result should have similarity = 0.8 (above 0.3 threshold)
-            if result:
-                self.assertGreaterEqual(result[0]["similarity"], 0.3)
+        import rag_store
+        result = rag_store.retrieve_similar_fixes("java:S2259", "context", "message")
+        self.assertEqual(len(result), 1)
+        self.assertGreaterEqual(result[0]["similarity"], 0.3)
+        self.assertEqual(result[0]["rule_key"], "java:S2259")
+        self.assertAlmostEqual(result[0]["similarity"], 0.8, places=2)
 
-    @patch("rag_store._get_embed_fn")
+    @patch("rag_store._embed", return_value=[0.1] * 768)
     @patch("rag_store._get_collection")
     def test_retrieve_filters_low_similarity(self, mock_col, mock_embed):
-        """Filters out results with similarity < 0.3."""
+        """Filters out results with similarity < 0.3 (distance=0.8 → similarity=0.2)."""
         coll = self._make_mock_collection(count=1)
         coll.query.return_value = {
             "documents": [["doc1"]],
-            "metadatas": [[{"rule_key": "java:S106", "patch_hunks": "", "reasoning": "",
-                            "confidence": "0.5", "file_name": "Bar.java", "message": ""}]],
-            "distances": [[0.8]],  # similarity = 0.2 < 0.3 → filtered out
+            "metadatas": [[{
+                "rule_key": "java:S106",
+                "patch_hunks": "",
+                "reasoning": "",
+                "confidence": "0.5",
+                "file_name": "Bar.java",
+                "message": "",
+            }]],
+            "distances": [[0.8]],  # similarity = 1 - 0.8 = 0.2 < 0.3 → filtered out
         }
         mock_col.return_value = coll
 
-        with patch("rag_store._embed", return_value=[0.1] * 768):
-            import importlib, rag_store
-            importlib.reload(rag_store)
-            result = rag_store.retrieve_similar_fixes("java:S2259", "context", "msg")
-            self.assertEqual(result, [])
+        import rag_store
+        result = rag_store.retrieve_similar_fixes("java:S2259", "context", "msg")
+        self.assertEqual(result, [])
 
     @patch("rag_store._get_collection")
     def test_retrieve_no_rag_when_collection_unavailable(self, mock_col):
         """Returns empty list when ChromaDB is unavailable."""
         mock_col.return_value = None
 
-        from rag_store import retrieve_similar_fixes
-        result = retrieve_similar_fixes("java:S2259", "ctx", "msg")
+        import rag_store
+        result = rag_store.retrieve_similar_fixes("java:S2259", "ctx", "msg")
         self.assertEqual(result, [])
 
     @patch("rag_store._get_collection")
@@ -100,34 +104,34 @@ class TestRagStore(unittest.TestCase):
         """store_fix returns False when ChromaDB unavailable."""
         mock_col.return_value = None
 
-        from rag_store import store_fix
-        result = store_fix("java:S2259", "ctx", "msg", "patch", "reason", 0.9, "Foo.java")
+        import rag_store
+        result = rag_store.store_fix("java:S2259", "ctx", "msg", "patch", "reason", 0.9, "Foo.java")
         self.assertFalse(result)
 
-    @patch("rag_store._get_embed_fn")
+    @patch("rag_store._embed", return_value=[0.1] * 768)
     @patch("rag_store._get_collection")
     def test_store_calls_upsert(self, mock_col, mock_embed):
-        """store_fix calls collection.upsert with correct data."""
+        """store_fix calls collection.upsert with correct metadata."""
         coll = self._make_mock_collection(count=0)
         mock_col.return_value = coll
 
-        with patch("rag_store._embed", return_value=[0.1] * 768):
-            import importlib, rag_store
-            importlib.reload(rag_store)
-            result = rag_store.store_fix(
-                "java:S2259", "context", "NPE message",
-                "--- a/Foo.java\n+++ b/Foo.java\n@@ -1,3 +1,4 @@",
-                "Added null check", 0.92, "Foo.java"
-            )
-            coll.upsert.assert_called_once()
-            call_kwargs = coll.upsert.call_args[1]
-            self.assertEqual(call_kwargs["metadatas"][0]["rule_key"], "java:S2259")
+        import rag_store
+        result = rag_store.store_fix(
+            "java:S2259", "context", "NPE message",
+            "--- a/Foo.java\n+++ b/Foo.java\n@@ -1,3 +1,4 @@",
+            "Added null check", 0.92, "Foo.java"
+        )
+        self.assertTrue(result)
+        coll.upsert.assert_called_once()
+        call_kwargs = coll.upsert.call_args[1]
+        self.assertEqual(call_kwargs["metadatas"][0]["rule_key"], "java:S2259")
+        self.assertEqual(call_kwargs["metadatas"][0]["file_name"], "Foo.java")
 
     def test_collection_stats_unavailable(self):
         """collection_stats returns available=False when ChromaDB not set up."""
         with patch("rag_store._get_collection", return_value=None):
-            from rag_store import collection_stats
-            stats = collection_stats()
+            import rag_store
+            stats = rag_store.collection_stats()
             self.assertFalse(stats["available"])
             self.assertEqual(stats["count"], 0)
 
@@ -143,8 +147,8 @@ class TestSonarRescan(unittest.TestCase):
         mock_settings.sonar_token = ""
         mock_settings.sonar_host_url = "https://sonarcloud.io"
 
-        from sonar_rescan import rescan_issue
-        ok, msg = rescan_issue("issue-key-123", "project:Foo.java")
+        import sonar_rescan
+        ok, msg = sonar_rescan.rescan_issue("issue-key-123", "project:Foo.java")
         self.assertIsNone(ok)
         self.assertIn("SONAR_TOKEN", msg)
 
@@ -154,19 +158,19 @@ class TestSonarRescan(unittest.TestCase):
         mock_settings.sonar_token = "squ_token"
         mock_settings.sonar_host_url = ""
 
-        from sonar_rescan import rescan_issue
-        ok, msg = rescan_issue("issue-key-123", "project:Foo.java")
+        import sonar_rescan
+        ok, msg = sonar_rescan.rescan_issue("issue-key-123", "project:Foo.java")
         self.assertIsNone(ok)
 
     def test_project_key_extraction(self):
         """_project_key_from_component extracts project key correctly."""
-        from sonar_rescan import _project_key_from_component
+        import sonar_rescan
         self.assertEqual(
-            _project_key_from_component("my-project:src/main/java/Foo.java"),
+            sonar_rescan._project_key_from_component("my-project:src/main/java/Foo.java"),
             "my-project"
         )
         self.assertEqual(
-            _project_key_from_component("standalone-key"),
+            sonar_rescan._project_key_from_component("standalone-key"),
             "standalone-key"
         )
 
@@ -181,8 +185,8 @@ class TestSonarRescan(unittest.TestCase):
         mock_resp.json.return_value = {"total": 1, "issues": [{"key": "issue-123"}]}
         mock_get.return_value = mock_resp
 
-        from sonar_rescan import _issue_still_open
-        result = _issue_still_open("issue-123")
+        import sonar_rescan
+        result = sonar_rescan._issue_still_open("issue-123")
         self.assertTrue(result)
 
     @patch("sonar_rescan.requests.get")
@@ -196,8 +200,8 @@ class TestSonarRescan(unittest.TestCase):
         mock_resp.json.return_value = {"total": 0, "issues": []}
         mock_get.return_value = mock_resp
 
-        from sonar_rescan import _issue_still_open
-        result = _issue_still_open("issue-123")
+        import sonar_rescan
+        result = sonar_rescan._issue_still_open("issue-123")
         self.assertFalse(result)
 
     @patch("sonar_rescan.requests.get")
@@ -208,8 +212,8 @@ class TestSonarRescan(unittest.TestCase):
         mock_settings.sonar_host_url = "https://sonarcloud.io"
         mock_get.side_effect = Exception("connection refused")
 
-        from sonar_rescan import _issue_still_open
-        result = _issue_still_open("issue-123")
+        import sonar_rescan
+        result = sonar_rescan._issue_still_open("issue-123")
         self.assertIsNone(result)
 
 
