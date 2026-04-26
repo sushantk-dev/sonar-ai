@@ -1,23 +1,16 @@
 """
-SonarAI — Diff Repair  (v2)
+SonarAI — Diff Repair  (v3)
 
-Two complementary strategies applied in sequence:
+Pre-processing steps applied before git apply, in order:
 
-Strategy A — Offset correction (fast):
-  Parse the patch hunks, locate the removed lines (-) in the actual file by
-  exact text match, rewrite the @@ header with the correct 1-based offset.
-  This handles the common case where the model's +/- lines are right but the
-  @@ numbers are wrong.
+  0a. _inject_file_headers  — prepend --- / +++ if patch starts with @@
+  0b. _fix_hunk_headers     — canonicalise malformed @@ lines
+                              (spaces after commas, missing spaces, etc.)
+  A.  _fix_offsets          — locate removed lines in file, rewrite @@ start
+  B.  _rebuild_from_intent  — full difflib rebuild if A still fails
 
-Strategy B — Full rebuild (fallback):
-  If Strategy A still can't be applied, extract what the model intended to
-  delete and add, find the deletion target in the file, and synthesise a
-  brand-new unified diff from scratch using difflib.  This is immune to any
-  @@ header error.
-
-normalise_diff_paths():
-  Rewrites --- / +++ headers to use the correct relative POSIX path.
-  Must be called before repair_diff().
+normalise_diff_paths() rewrites --- / +++ to the correct repo-relative path.
+Call order in validator: repair_diff() then normalise_diff_paths().
 """
 
 from __future__ import annotations
@@ -35,11 +28,7 @@ from loguru import logger
 def repair_diff(patch: str, file_path: str) -> str:
     """
     Return a version of ``patch`` that git apply will accept against ``file_path``.
-    Steps applied in order:
-      0. Inject missing --- / +++ file headers if the patch starts with @@
-      A. Fix wrong @@ offsets (locate removed lines in file, rewrite header)
-      B. Full rebuild via difflib if A still doesn't apply
-    Returns original patch unchanged if all steps fail.
+    All steps are applied in order; early exit when a step produces a change.
     """
     if not file_path or not Path(file_path).exists():
         return patch
@@ -51,10 +40,13 @@ def repair_diff(patch: str, file_path: str) -> str:
 
     file_lines = file_text.splitlines()
 
-    # ── Step 0: inject missing file headers ──────────────────────────────────
+    # 0a — inject missing file headers (patch starts with @@)
     patch = _inject_file_headers(patch, file_path)
 
-    # ── Strategy A: fix offsets ───────────────────────────────────────────────
+    # 0b — fix malformed @@ syntax (spaces after commas, missing spaces, etc.)
+    patch = _fix_hunk_headers(patch)
+
+    # A — fix wrong line offsets
     try:
         fixed = _fix_offsets(patch, file_lines)
         if fixed != patch:
@@ -63,7 +55,7 @@ def repair_diff(patch: str, file_path: str) -> str:
     except Exception as exc:
         logger.debug(f"[DiffRepair] Strategy A failed: {exc}")
 
-    # ── Strategy B: full rebuild from intended changes ────────────────────────
+    # B — full rebuild from intended +/- lines
     try:
         rebuilt = _rebuild_from_intent(patch, file_lines, file_path)
         if rebuilt:
@@ -76,29 +68,11 @@ def repair_diff(patch: str, file_path: str) -> str:
     return patch
 
 
-def _inject_file_headers(patch: str, file_path: str) -> str:
-    """
-    If the patch starts with @@ (missing --- / +++ headers), prepend them.
-    git apply requires file headers before the first hunk.
-    """
-    stripped = patch.lstrip()
-    if not stripped.startswith("@@"):
-        return patch   # headers already present
-
-    # Derive a sensible relative path from just the filename
-    # (normalise_diff_paths will fix it to the real relative path afterwards
-    #  if called in the right order — but we need *something* here so git
-    #  doesn't reject the patch before we even get to apply it)
-    fname = Path(file_path).name
-    header = f"--- a/{fname}\n+++ b/{fname}\n"
-    logger.info(f"[DiffRepair] Injected missing file headers for {fname}")
-    return header + stripped
-
-
 def normalise_diff_paths(patch: str, repo_root: str, file_path: str) -> str:
     """
     Rewrite --- / +++ lines to use the correct relative POSIX path.
     Fixes absolute paths, Windows backslashes, and wrong filenames.
+    Call AFTER repair_diff() so injected headers get corrected too.
     """
     if not patch:
         return patch
@@ -118,14 +92,83 @@ def normalise_diff_paths(patch: str, repo_root: str, file_path: str) -> str:
     return "".join(out)
 
 
+# ── Step 0a: inject missing file headers ─────────────────────────────────────
+
+def _inject_file_headers(patch: str, file_path: str) -> str:
+    """Prepend --- / +++ headers when the patch starts directly with @@."""
+    stripped = patch.lstrip()
+    if not stripped.startswith("@@"):
+        return patch
+    fname = Path(file_path).name
+    header = f"--- a/{fname}\n+++ b/{fname}\n"
+    logger.info(f"[DiffRepair] Injected missing file headers for {fname}")
+    return header + stripped
+
+
+# ── Step 0b: fix malformed @@ lines ──────────────────────────────────────────
+
+# Permissive regex: captures digits even when whitespace surrounds the comma
+_BAD_HUNK_RE = re.compile(
+    r"^@@\s*"                           # opening @@
+    r"-\s*(\d+)\s*(?:,\s*(\d+))?\s*"   # old range:  -start[,count]
+    r"\+\s*(\d+)\s*(?:,\s*(\d+))?\s*"  # new range:  +start[,count]
+    r"@@(.*)",                          # closing @@ + optional suffix
+)
+
+
+def _fix_hunk_headers(patch: str) -> str:
+    """
+    Rewrite every @@ line to the canonical form:
+        @@ -<start>,<count> +<start>,<count> @@[ suffix]
+
+    Fixes all of:
+      @@ -36, 8 +37,8 @@        space after comma
+      @@ -36,8 +37, 8 @@        space after comma (new range)
+      @@ -36 ,8 +37,8 @@        space before comma
+      @@ - 36,8 + 37,8 @@       space after sign
+      @@-36,8 +37,8@@           no spaces around @@
+      @@ -36 +37 @@             missing count (defaults to 1)
+    """
+    out = []
+    changed = False
+    for line in patch.splitlines(keepends=True):
+        # Only attempt to fix lines that look like @@ headers
+        if "@@" not in line or (not line.lstrip().startswith("@@")):
+            out.append(line)
+            continue
+
+        m = _BAD_HUNK_RE.match(line.strip())
+        if not m:
+            out.append(line)
+            continue
+
+        old_start = m.group(1)
+        old_count = m.group(2) if m.group(2) is not None else "1"
+        new_start = m.group(3)
+        new_count = m.group(4) if m.group(4) is not None else "1"
+        suffix    = m.group(5)   # e.g. " processTemplateFromFile" or ""
+
+        canonical = f"@@ -{old_start},{old_count} +{new_start},{new_count} @@{suffix}\n"
+        if canonical.rstrip() != line.rstrip():
+            logger.info(
+                f"[DiffRepair] Fixed @@ syntax: {line.rstrip()!r} → {canonical.rstrip()!r}"
+            )
+            changed = True
+        out.append(canonical)
+
+    if changed:
+        logger.info("[DiffRepair] Step 0b: malformed @@ headers corrected")
+    return "".join(out)
+
+
 # ── Strategy A: offset correction ────────────────────────────────────────────
 
-_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)", re.MULTILINE)
-_FILE_HDR_RE = re.compile(r"^(---|\+\+\+) ", re.MULTILINE)
+_HUNK_RE   = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)", re.MULTILINE)
+_FILE_HDR  = re.compile(r"^(---|\+\+\+) ", re.MULTILINE)
 
 
 def _fix_offsets(patch: str, file_lines: list[str]) -> str:
-    """Rewrite each @@ header so old_start points to where the removed lines live."""
+    """Rewrite each @@ header so old_start matches where the removed lines live."""
     file_stripped = [l.rstrip() for l in file_lines]
     result: list[str] = []
     lines = patch.splitlines(keepends=True)
@@ -142,42 +185,35 @@ def _fix_offsets(patch: str, file_lines: list[str]) -> str:
         # Collect hunk body
         hunk_body: list[str] = []
         i += 1
-        while i < len(lines) and not _HUNK_RE.match(lines[i]) and not _FILE_HDR_RE.match(lines[i]):
+        while i < len(lines) and not _HUNK_RE.match(lines[i]) and not _FILE_HDR.match(lines[i]):
             hunk_body.append(lines[i])
             i += 1
 
-        # Lines the model says to remove (stripped of leading '-')
         removed = [l[1:].rstrip() for l in hunk_body if l.startswith("-")]
 
         if not removed:
-            # Addition-only hunk — use context to anchor
             ctx = [l[1:].rstrip() for l in hunk_body if l.startswith(" ") and l[1:].strip()]
-            anchor_1based = _find_sequence(ctx, file_stripped) if ctx else None
+            anchor = _find_sequence(ctx, file_stripped) if ctx else None
         else:
-            anchor_1based = _find_sequence(removed, file_stripped)
+            anchor = _find_sequence(removed, file_stripped)
 
-        if anchor_1based is None:
-            # Can't locate — keep original header
+        if anchor is None:
             result.append(line)
             result.extend(hunk_body)
             continue
 
         old_count = sum(1 for l in hunk_body if not l.startswith("+"))
         new_count = sum(1 for l in hunk_body if not l.startswith("-"))
-        suffix = m.group(5) or ""
-        new_start = anchor_1based + (int(m.group(3)) - int(m.group(1)))
-        new_hdr = f"@@ -{anchor_1based},{old_count} +{new_start},{new_count} @@{suffix}\n"
-        result.append(new_hdr)
+        new_plus  = anchor + (int(m.group(3)) - int(m.group(1)))
+        suffix    = m.group(5) or ""
+        result.append(f"@@ -{anchor},{old_count} +{new_plus},{new_count} @@{suffix}\n")
         result.extend(hunk_body)
 
     return "".join(result)
 
 
 def _find_sequence(needles: list[str], haystack: list[str]) -> Optional[int]:
-    """
-    Find the 1-based index in haystack where needles appear as a contiguous
-    subsequence (ignoring trailing whitespace).  Returns None if not found.
-    """
+    """1-based index of the first contiguous match of needles in haystack."""
     if not needles:
         return None
     n = len(needles)
@@ -187,43 +223,33 @@ def _find_sequence(needles: list[str], haystack: list[str]) -> Optional[int]:
     return None
 
 
-# ── Strategy B: rebuild from intent ──────────────────────────────────────────
+# ── Strategy B: full rebuild ──────────────────────────────────────────────────
 
 def _rebuild_from_intent(patch: str, file_lines: list[str], file_path: str) -> Optional[str]:
-    """
-    Extract the model's intended deletions and additions from the patch,
-    apply them to the file in memory, and produce a fresh unified diff.
-    """
+    """Apply the intended +/- changes in memory and produce a fresh diff."""
     hunks = _parse_hunks(patch)
     if not hunks:
         return None
 
     file_stripped = [l.rstrip() for l in file_lines]
-    # Work on a mutable copy (preserve original indentation)
     new_lines = list(file_lines)
-    offset = 0  # cumulative line shift from previous hunks
+    offset = 0
 
     for removed, added in hunks:
         if not removed:
-            # Pure insertion — can't locate without context; skip this hunk
             continue
-
         pos = _find_sequence(removed, file_stripped)
         if pos is None:
-            logger.debug(f"[DiffRepair-B] Could not locate removed lines: {removed[:2]}")
+            logger.debug(f"[DiffRepair-B] Cannot locate: {removed[:2]}")
             return None
-
-        # Apply: replace removed lines with added lines at pos (1-based → 0-based)
         idx = pos - 1 + offset
         new_lines[idx : idx + len(removed)] = added
         offset += len(added) - len(removed)
 
     rel_path = Path(file_path).name
-    old_text = [l + "\n" for l in file_lines]
-    new_text = [l.rstrip("\n") + "\n" for l in new_lines]
-
     diff = list(difflib.unified_diff(
-        old_text, new_text,
+        [l + "\n" for l in file_lines],
+        [l.rstrip("\n") + "\n" for l in new_lines],
         fromfile=f"a/{rel_path}",
         tofile=f"b/{rel_path}",
         lineterm="",
@@ -234,10 +260,7 @@ def _rebuild_from_intent(patch: str, file_lines: list[str], file_path: str) -> O
 
 
 def _parse_hunks(patch: str) -> list[tuple[list[str], list[str]]]:
-    """
-    Parse a unified diff into (removed_lines, added_lines) pairs per hunk.
-    Strips the leading -/+ character and trailing whitespace.
-    """
+    """Parse a unified diff into (removed, added) line lists per hunk."""
     hunks: list[tuple[list[str], list[str]]] = []
     lines = patch.splitlines()
     i = 0
@@ -245,12 +268,12 @@ def _parse_hunks(patch: str) -> list[tuple[list[str], list[str]]]:
         if _HUNK_RE.match(lines[i]):
             removed, added = [], []
             i += 1
-            while i < len(lines) and not _HUNK_RE.match(lines[i]) and not _FILE_HDR_RE.match(lines[i]):
+            while i < len(lines) and not _HUNK_RE.match(lines[i]) and not _FILE_HDR.match(lines[i]):
                 l = lines[i]
                 if l.startswith("-"):
                     removed.append(l[1:].rstrip())
                 elif l.startswith("+"):
-                    added.append(l[1:])   # preserve indentation on additions
+                    added.append(l[1:])
                 i += 1
             hunks.append((removed, added))
         else:

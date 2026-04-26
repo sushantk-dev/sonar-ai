@@ -15,9 +15,9 @@ from typing import Optional
 
 from loguru import logger
 
-from sonar_ai.config import settings
-from sonar_ai.state import AgentState, ValidationResult
-from sonar_ai.diff_repair import repair_diff, normalise_diff_paths
+from config import settings
+from state import AgentState, ValidationResult
+from diff_repair import repair_diff, normalise_diff_paths
 
 # Maximum characters of error output forwarded to the LLM retry prompt
 _MAX_ERROR_CHARS = 2000
