@@ -16,8 +16,26 @@
               stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
       </svg>
       Import Report
-      <input type="file" accept=".json" (change)="onImport()" style="display:none">
+      <input type="file" accept=".json" (change)="onImport($event)" style="display:none">
     </label>
+  </div>
+
+
+  <!-- Upload feedback -->
+  <div class="upload-msg" *ngIf="uploadMsg">
+    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+      <path d="M2 6.5L5 9.5L11 3.5" stroke="currentColor" stroke-width="1.6"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    {{ uploadMsg }}
+  </div>
+  <div class="upload-err" *ngIf="uploadError">
+    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+      <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M6.5 4V7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <circle cx="6.5" cy="9" r=".6" fill="currentColor"/>
+    </svg>
+    {{ uploadError }}
   </div>
 
   <!-- ── Filters ── -->

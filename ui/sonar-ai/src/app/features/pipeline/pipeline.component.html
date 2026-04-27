@@ -6,149 +6,207 @@
       <h1>Pipeline Runs</h1>
       <p class="meta">Per-issue agent trace — Planner → Generator → Critic → Validate → Deliver</p>
     </div>
-    <button class="sim-btn" (click)="simulate()" [disabled]="simulating">
-      <ng-container *ngIf="!simulating">
+    <div class="header-actions">
+      <span class="api-badge" [class.api-badge--live]="!error()">
+        <span class="api-badge__dot"></span>
+        {{ error() ? 'API offline' : 'API connected' }}
+      </span>
+      <button class="run-btn" (click)="showForm.set(!showForm())" [disabled]="running()">
         <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
           <path d="M1.5 1L9.5 5.5L1.5 10V1Z" fill="currentColor"/>
         </svg>
-        Simulate Run
-      </ng-container>
-      <span *ngIf="simulating" class="spinner"></span>
-    </button>
+        Run Pipeline
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Run form ── -->
+  <div class="run-form" *ngIf="showForm()">
+    <div class="run-form__grid">
+      <div class="run-form__field run-form__field--wide">
+        <label>Repository URL</label>
+        <input class="run-form__input" [value]="repoUrl()"
+               (input)="repoUrl.set($any($event.target).value)"
+               placeholder="https://github.com/owner/repo.git">
+      </div>
+      <div class="run-form__field">
+        <label>Commit SHA</label>
+        <input class="run-form__input" [value]="commitSha()"
+               (input)="commitSha.set($any($event.target).value)"
+               placeholder="abc1234 (or HEAD)">
+      </div>
+      <div class="run-form__field run-form__field--sm">
+        <label>Max Issues</label>
+        <input class="run-form__input" type="number" [value]="maxIssues()"
+               (input)="maxIssues.set(+$any($event.target).value)"
+               min="0" placeholder="0 = all">
+      </div>
+    </div>
+    <div class="run-form__flags">
+      <label class="flag-toggle" [class.flag-toggle--on]="parallel()">
+        <input type="checkbox" [checked]="parallel()"
+               (change)="parallel.set($any($event.target).checked)">
+        Parallel
+      </label>
+      <label class="flag-toggle" [class.flag-toggle--on]="rescan()">
+        <input type="checkbox" [checked]="rescan()"
+               (change)="rescan.set($any($event.target).checked)">
+        Rescan
+      </label>
+      <label class="flag-toggle" [class.flag-toggle--on]="noRag()">
+        <input type="checkbox" [checked]="noRag()"
+               (change)="noRag.set($any($event.target).checked)">
+        No RAG
+      </label>
+      <label class="flag-toggle" [class.flag-toggle--on]="dryRun()">
+        <input type="checkbox" [checked]="dryRun()"
+               (change)="dryRun.set($any($event.target).checked)">
+        Dry Run
+      </label>
+      <button class="run-form__submit" (click)="startRun()" [disabled]="running()">
+        <span *ngIf="!running()">▶ Start</span>
+        <span *ngIf="running()" class="spinner"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Error banner ── -->
+  <div class="error-banner" *ngIf="error()">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+      <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M7 4.5V7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <circle cx="7" cy="9.5" r=".6" fill="currentColor"/>
+    </svg>
+    {{ error() }}
+    <button class="error-banner__close" (click)="error.set(null)">✕</button>
   </div>
 
   <!-- ── Layout ── -->
   <div class="layout">
 
-    <!-- ── Run list ── -->
+    <!-- Run list -->
     <div class="run-list">
-      <div
-        *ngFor="let run of allRuns"
-        class="run-card"
-        [class.run-card--active]="selected?.id === run.id"
-        (click)="select(run)">
+      <div *ngFor="let run of allRuns"
+           class="run-card"
+           [class.run-card--active]="selected()?.id === run.id"
+           [class.run-card--live]="run.live"
+           (click)="select(run)">
 
-        <!-- Top row: severity + rule + outcome -->
         <div class="run-card__top">
-          <span class="pill {{ run.severity | sevClass }}">{{ run.severity }}</span>
+          <span class="pill {{ $any(run.severity) | sevClass }}">{{ run.severity }}</span>
           <span class="run-card__rule">{{ run.ruleKey }}</span>
-          <span *ngIf="run.outcome" class="badge {{ run.outcome | outcomeClass }}">
-            {{ run.outcome | outcomeLabel }}
+          <span *ngIf="run.live" class="live-badge">LIVE</span>
+          <span *ngIf="run.outcome" class="badge {{ $any(run.outcome) | outcomeClass }}">
+            {{ $any(run.outcome) | outcomeLabel }}
           </span>
-          <span *ngIf="!run.outcome" class="badge pending">Running…</span>
+          <span *ngIf="!run.outcome && run.live" class="badge pending">Running…</span>
         </div>
 
-        <!-- Component path -->
         <div class="run-card__comp">{{ run.component }}</div>
 
-        <!-- Step progress bar -->
         <div class="prog-bar">
-          <div
-            *ngFor="let s of run.steps"
-            class="prog-bar__seg prog-bar__seg--{{ s.status }}"
-            [title]="s.label">
+          <div *ngFor="let s of run.steps"
+               class="prog-bar__seg prog-bar__seg--{{ s.status }}"
+               [title]="s.label">
           </div>
         </div>
 
-        <!-- Footer: step count + retries -->
         <div class="run-card__foot">
           <span>{{ doneCnt(run) }} / {{ run.steps.length }} steps</span>
           <span *ngIf="run.retries && run.retries > 0" class="run-card__retry">
             {{ run.retries }} {{ run.retries === 1 ? 'retry' : 'retries' }}
           </span>
+          <span *ngIf="run.live" class="run-card__live-tag">● live</span>
         </div>
       </div>
     </div>
 
-    <!-- ── Detail pane ── -->
+    <!-- Detail pane -->
     <div class="detail">
 
-      <!-- Empty state -->
-      <div class="detail__empty" *ngIf="!selected">
+      <!-- Empty -->
+      <div class="detail__empty" *ngIf="!selected()">
         <div class="detail__empty-icon">
           <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-            <circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 3"/>
-            <path d="M11 16L14.5 19.5L21 12.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity=".4"/>
+            <circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="1.5"
+                    stroke-dasharray="3 3"/>
+            <path d="M11 16L14.5 19.5L21 12.5" stroke="currentColor" stroke-width="1.8"
+                  stroke-linecap="round" stroke-linejoin="round" opacity=".4"/>
           </svg>
         </div>
         <div class="detail__empty-title">Select a run</div>
         <div class="detail__empty-sub">Click any run card to see the full agent trace</div>
       </div>
 
-      <!-- Run detail -->
-      <ng-container *ngIf="selected">
+      <ng-container *ngIf="selected() as run">
 
-        <!-- Detail header -->
+        <!-- Header -->
         <div class="detail__header">
           <div class="detail__header-row">
-            <span class="pill {{ selected.severity | sevClass }}">{{ selected.severity }}</span>
-            <span class="detail__rule">{{ selected.ruleKey }}</span>
-            <span *ngIf="selected.outcome" class="badge {{ selected.outcome | outcomeClass }}">
-              {{ selected.outcome | outcomeLabel }}
+            <span class="pill {{ $any(run.severity) | sevClass }}">{{ run.severity }}</span>
+            <span class="detail__rule">{{ run.ruleKey }}</span>
+            <span *ngIf="run.live" class="live-badge">LIVE</span>
+            <span *ngIf="run.outcome" class="badge {{ $any(run.outcome) | outcomeClass }}">
+              {{ $any(run.outcome) | outcomeLabel }}
             </span>
           </div>
-          <div class="detail__comp">{{ selected.component }}</div>
+          <div class="detail__comp">{{ run.component }}</div>
         </div>
 
-        <!-- Quick stats strip -->
+        <!-- Stat strip -->
         <div class="stat-strip">
           <div class="stat-strip__item">
-            <div class="stat-strip__val">{{ selected.ragHits ?? 0 }}</div>
+            <div class="stat-strip__val">{{ run.ragHits ?? '—' }}</div>
             <div class="stat-strip__lbl">RAG hits</div>
           </div>
           <div class="stat-strip__divider"></div>
           <div class="stat-strip__item">
-            <div class="stat-strip__val">{{ selected.retries ?? 0 }}</div>
+            <div class="stat-strip__val">{{ run.retries ?? '—' }}</div>
             <div class="stat-strip__lbl">Retries</div>
           </div>
           <div class="stat-strip__divider"></div>
           <div class="stat-strip__item">
             <div class="stat-strip__val stat-strip__val--conf"
-                 [class]="(selected.confidence ?? 'low').toLowerCase()">
-              {{ selected.confidence ?? '—' }}
+                 [class]="confClass(run.confidence)">
+              {{ run.confidence ?? '—' }}
             </div>
             <div class="stat-strip__lbl">Confidence</div>
           </div>
           <div class="stat-strip__divider"></div>
           <div class="stat-strip__item">
-            <div class="stat-strip__val">{{ doneCnt(selected) }}/{{ selected.steps.length }}</div>
+            <div class="stat-strip__val">{{ doneCnt(run) }}/{{ run.steps.length }}</div>
             <div class="stat-strip__lbl">Steps done</div>
           </div>
         </div>
 
         <!-- Step trace -->
         <div class="trace">
-          <div
-            *ngFor="let step of selected.steps; let last = last"
-            class="trace-step trace-step--{{ step.status }}">
-
+          <div *ngFor="let step of run.steps; let last = last"
+               class="trace-step trace-step--{{ step.status }}">
             <div class="trace-step__track">
               <div class="trace-step__dot"></div>
               <div class="trace-step__line" *ngIf="!last"></div>
             </div>
-
             <div class="trace-step__body">
               <div class="trace-step__top">
                 <span class="trace-step__label">{{ step.label }}</span>
                 <span class="trace-step__ms" *ngIf="step.ms">{{ step.ms | number }}ms</span>
               </div>
               <div class="trace-step__detail" *ngIf="step.detail">{{ step.detail }}</div>
-
-              <!-- Running shimmer -->
               <div class="trace-step__shimmer" *ngIf="step.status === 'running'"></div>
             </div>
           </div>
         </div>
 
         <!-- Outcome banner -->
-        <div class="outcome outcome--{{ selected.outcome | outcomeClass }}" *ngIf="selected.outcome">
-          <div class="outcome__badge outcome__badge--{{ selected.outcome | outcomeClass }}">
-            {{ outcomeIcon(selected.outcome) }}
+        <div class="outcome outcome--{{ $any(run.outcome) | outcomeClass }}" *ngIf="run.outcome">
+          <div class="outcome__badge outcome__badge--{{ $any(run.outcome) | outcomeClass }}">
+            {{ outcomeIcon(run.outcome) }}
           </div>
           <div class="outcome__body">
-            <div class="outcome__title">{{ outcomeTitle(selected.outcome) }}</div>
-            <a *ngIf="selected.prUrl" [href]="selected.prUrl" target="_blank"
-               class="outcome__link">{{ selected.prUrl }}</a>
+            <div class="outcome__title">{{ outcomeTitle(run.outcome) }}</div>
+            <a *ngIf="run.prUrl" [href]="run.prUrl" target="_blank"
+               class="outcome__link">{{ run.prUrl }}</a>
           </div>
         </div>
 

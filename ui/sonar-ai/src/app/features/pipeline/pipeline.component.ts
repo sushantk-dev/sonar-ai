@@ -1,102 +1,218 @@
 // src/app/features/pipeline/pipeline.component.ts
-import { Component, inject, OnDestroy } from '@angular/core';
+import { Component, inject, OnDestroy, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { Subscription } from 'rxjs';
+import { ApiService, RunStatus, PipelineStep } from '../../core/api.service';
 import { DataService } from '../../core/data.service';
-import { PipelineRun } from '../../core/models';
 import { SevClassPipe }    from '../../shared/sev-class.pipe';
 import { OutcomeClassPipe } from '../../shared/outcome-class.pipe';
 import { OutcomeLabelPipe } from '../../shared/outcome-label.pipe';
 
+type ConfLabel = 'HIGH' | 'MEDIUM' | 'LOW' | null;
+
+interface UiRun {
+  id:          string;
+  ruleKey:     string;
+  severity:    string;
+  component:   string;
+  steps:       PipelineStep[];
+  outcome?:    string;
+  confidence?: ConfLabel;
+  prUrl?:      string;
+  ragHits?:    number;
+  retries?:    number;
+  live:        boolean;   // true = comes from real API
+}
+
 @Component({
   selector: 'app-pipeline',
   standalone: true,
-  imports: [CommonModule, SevClassPipe, OutcomeClassPipe, OutcomeLabelPipe],
+  imports: [CommonModule, FormsModule, SevClassPipe, OutcomeClassPipe, OutcomeLabelPipe],
   templateUrl: './pipeline.component.html',
   styleUrl:    './pipeline.component.scss',
 })
 export class PipelineComponent implements OnDestroy {
-  private svc = inject(DataService);
+  private api  = inject(ApiService);
+  private data = inject(DataService);
 
-  runs: PipelineRun[] = [...this.svc.runs];
-  simRun: PipelineRun | null = null;
-  selected: PipelineRun | null = null;
-  simulating = false;
-  private timer: ReturnType<typeof setInterval> | null = null;
+  // ── Run form ──────────────────────────────────────────────────────────────
+  repoUrl   = signal('https://github.com/org/repo.git');
+  commitSha = signal('');
+  maxIssues = signal(0);
+  parallel  = signal(false);
+  rescan    = signal(false);
+  noRag     = signal(false);
+  dryRun    = signal(false);
 
-  get allRuns() {
-    return this.simRun ? [this.simRun, ...this.runs] : this.runs;
+  showForm  = signal(false);
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  runs     = signal<UiRun[]>(this._seedRuns());
+  selected = signal<UiRun | null>(null);
+  running  = signal(false);
+  error    = signal<string | null>(null);
+
+  private _poll?: Subscription;
+
+  get allRuns() { return this.runs(); }
+
+  // ── Seed with local mock data so the UI isn't empty on first open ─────────
+  private _seedRuns(): UiRun[] {
+    return this.data.runs.map(r => ({
+      id:         r.id,
+      ruleKey:    r.ruleKey,
+      severity:   r.severity,
+      component:  r.component,
+      steps:      r.steps.map(s => ({
+        label:  s.label,
+        status: s.status as any,
+        detail: s.detail ?? '',
+        ms:     s.ms     ?? 0,
+      })),
+      outcome:    r.outcome,
+      confidence: r.confidence as ConfLabel,
+      prUrl:      r.prUrl,
+      ragHits:    r.ragHits,
+      retries:    r.retries,
+      live:       false,
+    }));
   }
 
-  select(run: PipelineRun) { this.selected = run; }
+  // ── UI helpers ────────────────────────────────────────────────────────────
+  select(run: UiRun)   { this.selected.set(run); }
+  doneCnt(run: UiRun)  { return run.steps.filter(s => s.status === 'done').length; }
+  confClass(c: ConfLabel | string | undefined) { return (c ?? '').toLowerCase(); }
 
-  doneCnt(run: PipelineRun) {
-    return run.steps.filter(s => s.status === 'done').length;
+  outcomeIcon(o?: string)  {
+    return { pr_opened:'✓', draft_pr:'~', escalated:'!', error:'✕' }[o ?? ''] ?? '?';
   }
-
-  outcomeIcon(outcome: string): string {
-    return { pr_opened: '✓', draft_pr: '~', escalated: '!', error: '✕' }[outcome] ?? '?';
-  }
-
-  outcomeTitle(outcome: string): string {
+  outcomeTitle(o?: string) {
     return {
       pr_opened: 'Pull request opened',
       draft_pr:  'Draft PR — review required',
       escalated: 'Escalated — manual fix needed',
       error:     'Pipeline error',
-    }[outcome] ?? outcome;
+    }[o ?? ''] ?? o ?? '';
   }
 
-  simulate() {
-    if (this.simulating) return;
-    this.simulating = true;
+  confLabel(score: number): ConfLabel {
+    if (score >= 0.8)  return 'HIGH';
+    if (score >= 0.5)  return 'MEDIUM';
+    return 'LOW';
+  }
 
-    const stepLabels  = ['Ingest','Load Repo','RAG Fetch','Planner','Generator','Critic','Validate','Deliver'];
-    const details     = [
-      'Parsed S106 System.out.println — MAJOR severity',
-      'Cloned @ def5678, resolved OrderController.java:55',
-      '2 similar fixes retrieved from vector store',
-      'Strategy: replace System.out with SLF4J logger (0.95)',
-      'Generated unified diff — 3 lines changed',
-      'Approved — standard logger replacement pattern',
-      'git apply ✓  mvn compile ✓  mvn test ✓',
-      'PR #145 opened, fix stored in vector DB',
-    ];
-    const durations   = [100, 2200, 310, 1700, 2100, 1400, 11000, 720];
+  // ── Start real pipeline run ───────────────────────────────────────────────
+  startRun() {
+    if (this.running()) return;
 
-    this.simRun = {
-      id: 'sim', ruleKey: 'java:S106', severity: 'MAJOR',
-      component: 'com.example.api:OrderController.java',
-      ragHits: 2, retries: 0,
-      steps: stepLabels.map(label => ({ label, status: 'pending' as const })),
+    this.running.set(true);
+    this.error.set(null);
+    this.showForm.set(false);
+
+    this.api.startRun({
+      repo_url:   this.repoUrl(),
+      commit_sha: this.commitSha(),
+      max_issues: this.maxIssues(),
+      parallel:   this.parallel(),
+      rescan:     this.rescan(),
+      no_rag:     this.noRag(),
+      dry_run:    this.dryRun(),
+    }).subscribe({
+      next: ({ run_id }) => this._pollRun(run_id),
+      error: (err: Error) => {
+        this.error.set(err.message);
+        this.running.set(false);
+      },
+    });
+  }
+
+  private _pollRun(runId: string) {
+    // Create a live placeholder run card immediately
+    const liveRun: UiRun = {
+      id:        runId,
+      ruleKey:   'Starting…',
+      severity:  'MAJOR',
+      component: '',
+      steps: [
+        'Ingest','Load Repo','RAG Fetch',
+        'Planner','Generator','Critic','Validate','Deliver',
+      ].map(label => ({ label, status: 'pending' as const, detail: '', ms: 0 })),
+      live: true,
     };
-    this.selected = this.simRun;
 
-    let step = 0;
-    this.timer = setInterval(() => {
-      if (!this.simRun) return;
-      if (step < this.simRun.steps.length) {
-        if (step > 0) {
-          this.simRun.steps[step - 1].status = 'done';
-          this.simRun.steps[step - 1].detail = details[step - 1];
-          this.simRun.steps[step - 1].ms     = durations[step - 1];
-        }
-        this.simRun.steps[step].status = 'running';
-        step++;
-      } else {
-        const last = this.simRun.steps.length - 1;
-        this.simRun.steps[last].status = 'done';
-        this.simRun.steps[last].detail = details[last];
-        this.simRun.steps[last].ms     = durations[last];
-        this.simRun.outcome    = 'pr_opened';
-        this.simRun.confidence = 'HIGH';
-        this.simRun.prUrl      = 'https://github.com/org/repo/pull/145';
-        this.simulating = false;
-        clearInterval(this.timer!);
+    this.runs.update(rs => [liveRun, ...rs]);
+    this.selected.set(liveRun);
+
+    this._poll = this.api.pollRun(runId).subscribe({
+      next: (status: RunStatus) => this._applyStatus(runId, status),
+      error: (err: Error) => {
+        this.error.set(err.message);
+        this.running.set(false);
+      },
+    });
+  }
+
+  private _applyStatus(runId: string, status: RunStatus) {
+    this.runs.update(rs => rs.map(r => {
+      if (r.id !== runId) return r;
+
+      // Derive display fields from the first result if available
+      const first = status.results?.[0];
+      const updatedRun: UiRun = {
+        ...r,
+        steps:      status.steps ?? r.steps,
+        outcome:    first?.outcome,
+        confidence: first ? this.confLabel(first.confidence) : undefined,
+        prUrl:      first?.pr_url ?? undefined,
+      };
+
+      // If first result has rule info, fill run header
+      if (first) {
+        updatedRun.ruleKey   = first.rule_key;
+        updatedRun.severity  = first.severity;
+        updatedRun.component = first.file_path;
       }
-    }, 700);
+
+      return updatedRun;
+    }));
+
+    // Keep selected in sync
+    if (this.selected()?.id === runId) {
+      const updated = this.runs().find(r => r.id === runId);
+      if (updated) this.selected.set(updated);
+    }
+
+    if (status.status === 'done' || status.status === 'error') {
+      this.running.set(false);
+      if (status.status === 'error' && status.error) {
+        this.error.set(status.error);
+      }
+      // If multi-issue run, explode results into individual run cards
+      if ((status.results?.length ?? 0) > 1) {
+        this._explodeResults(runId, status);
+      }
+    }
   }
 
-  ngOnDestroy() {
-    if (this.timer) clearInterval(this.timer);
+  /** For multi-issue runs, replace the placeholder card with one card per issue. */
+  private _explodeResults(runId: string, status: RunStatus) {
+    const newCards: UiRun[] = status.results.map((r, i) => ({
+      id:         `${runId}-${i}`,
+      ruleKey:    r.rule_key,
+      severity:   r.severity,
+      component:  r.file_path,
+      outcome:    r.outcome,
+      confidence: this.confLabel(r.confidence),
+      prUrl:      r.pr_url ?? undefined,
+      steps:      status.steps ?? [],   // shared steps for now
+      live:       true,
+    }));
+
+    this.runs.update(rs => [...newCards, ...rs.filter(r => r.id !== runId)]);
+    if (newCards[0]) this.selected.set(newCards[0]);
   }
+
+  // ── Cleanup ───────────────────────────────────────────────────────────────
+  ngOnDestroy() { this._poll?.unsubscribe(); }
 }

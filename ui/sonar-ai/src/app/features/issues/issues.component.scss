@@ -514,3 +514,28 @@
   color: var(--text-muted);
   font-style: italic;
 }
+
+// ── Upload feedback ───────────────────────────────────────────────────────
+.upload-msg, .upload-err {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.upload-msg {
+  background: rgba(22,163,74,.07);
+  border: 1px solid rgba(22,163,74,.22);
+  color: var(--status-success);
+}
+
+.upload-err {
+  background: rgba(220,38,38,.07);
+  border: 1px solid rgba(220,38,38,.22);
+  color: var(--status-danger);
+}

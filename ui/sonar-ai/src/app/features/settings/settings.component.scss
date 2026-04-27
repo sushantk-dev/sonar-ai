@@ -393,3 +393,18 @@ select.input {
     overflow-x: auto;
   }
 }
+
+// ── Save error ────────────────────────────────────────────────────────────
+.save-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(220,38,38,.07);
+  border: 1px solid rgba(220,38,38,.22);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--status-danger);
+  margin-bottom: 14px;
+  flex-shrink: 0;
+}

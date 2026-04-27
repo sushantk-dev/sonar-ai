@@ -1,9 +1,7 @@
 import { Pipe, PipeTransform } from '@angular/core';
-import { Outcome } from '../core/models';
-
 @Pipe({ name: 'outcomeClass', standalone: true })
 export class OutcomeClassPipe implements PipeTransform {
-  transform(value: Outcome | undefined): string {
+  transform(value: string | undefined): string {
     const map: Record<string, string> = {
       pr_opened: 'pr-opened',
       draft_pr:  'draft-pr',

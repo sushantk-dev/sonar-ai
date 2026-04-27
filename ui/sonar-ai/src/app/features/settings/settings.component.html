@@ -24,6 +24,15 @@
     </button>
   </div>
 
+  <!-- Save error -->
+  <div class="save-error" *ngIf="saveError">
+    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+      <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M6.5 4V7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </svg>
+    {{ saveError }}
+  </div>
+
   <!-- ── Layout ── -->
   <div class="layout">
 

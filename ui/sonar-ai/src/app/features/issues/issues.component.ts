@@ -4,6 +4,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DataService } from '../../core/data.service';
 import { SonarIssue, Severity } from '../../core/models';
+import { ApiService } from '../../core/api.service';
 import { SevClassPipe }    from '../../shared/sev-class.pipe';
 import { OutcomeLabelPipe } from '../../shared/outcome-label.pipe';
 import { OutcomeClassPipe } from '../../shared/outcome-class.pipe';
@@ -19,7 +20,12 @@ const SEV_ORDER: Severity[] = ['BLOCKER','CRITICAL','MAJOR','MINOR','INFO'];
   styleUrl:    './issues.component.scss',
 })
 export class IssuesComponent {
-  svc = inject(DataService);
+  svc         = inject(DataService);
+  private apiSvc = inject(ApiService);
+
+  uploading   = false;
+  uploadMsg   = '';
+  uploadError = '';
 
   search    = '';
   sevFilter = 'ALL';
@@ -76,7 +82,40 @@ export class IssuesComponent {
     return Array.from({ length: Math.min(this.totalPages(), 7) }, (_, i) => i);
   }
 
-  onImport() {
-    alert('Wire this to a FileReader + JSON.parse in production.');
+  onImport(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file  = input.files?.[0];
+    if (!file) return;
+
+    this.uploading   = true;
+    this.uploadMsg   = '';
+    this.uploadError = '';
+
+    this.apiSvc.uploadReport(file).subscribe({
+      next: (res) => {
+        this.uploading = false;
+        this.uploadMsg = `Loaded ${res.issue_count} issues from ${file.name}`;
+        // Reload issues from API
+        this.apiSvc.getIssues().subscribe(data => {
+          // Patch local data service issues with real data
+          (this.svc as any).issues = data.issues.map((i: any) => ({
+            key:       i.key,
+            ruleKey:   i.rule_key,
+            severity:  i.severity,
+            component: i.component,
+            line:      i.line,
+            message:   i.message,
+            effort:    i.effort,
+            status:    i.status,
+            outcome:   'pending' as const,
+          }));
+        });
+      },
+      error: (err: Error) => {
+        this.uploading   = false;
+        this.uploadError = err.message;
+      },
+    });
+    input.value = ''; // reset so same file can be re-uploaded
   }
 }

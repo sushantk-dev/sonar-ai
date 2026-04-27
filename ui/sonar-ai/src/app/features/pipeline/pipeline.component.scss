@@ -499,3 +499,226 @@
     &:hover { text-decoration: underline; }
   }
 }
+
+// ── Header actions ────────────────────────────────────────────────────────
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+// API status badge
+.api-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 20px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: rgba(220,38,38,.08);
+  color: var(--status-danger);
+  border: 1px solid rgba(220,38,38,.2);
+
+  &--live {
+    background: rgba(22,163,74,.08);
+    color: var(--status-success);
+    border-color: rgba(22,163,74,.2);
+  }
+
+  &__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulse-dot 2s infinite;
+  }
+}
+
+.run-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 500;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 130px;
+  justify-content: center;
+  transition: background 0.15s, box-shadow 0.15s;
+  box-shadow: 0 1px 3px rgba(91,95,199,.35);
+
+  &:hover:not(:disabled) {
+    background: var(--brand-hover);
+    box-shadow: 0 2px 8px rgba(91,95,199,.4);
+  }
+  &:disabled { opacity: 0.6; cursor: not-allowed; }
+}
+
+// ── Run form ──────────────────────────────────────────────────────────────
+.run-form {
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 14px;
+  flex-shrink: 0;
+  animation: slide-down 0.18s ease;
+
+  &__grid {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+
+  &__field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex: 1;
+    min-width: 180px;
+
+    label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    &--wide { flex: 2; }
+    &--sm   { flex: 0 0 110px; min-width: unset; }
+  }
+
+  &__input {
+    padding: 8px 11px;
+    font-size: 13px;
+    font-family: var(--font-sans);
+    border: 1px solid var(--border-md);
+    border-radius: 7px;
+    background: var(--surface-1);
+    color: var(--text-primary);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+
+    &:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px var(--brand-ring);
+    }
+    &::placeholder { color: var(--text-muted); }
+  }
+
+  &__flags {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  &__submit {
+    margin-left: auto;
+    padding: 8px 20px;
+    background: var(--brand);
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    min-width: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    &:hover:not(:disabled) { background: var(--brand-hover); }
+    &:disabled { opacity: 0.6; cursor: not-allowed; }
+  }
+}
+
+@keyframes slide-down {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+// Flag toggles
+.flag-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-md);
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  background: var(--surface-1);
+  transition: all 0.12s;
+  user-select: none;
+
+  input[type="checkbox"] { display: none; }
+
+  &:hover { border-color: var(--brand-ring); color: var(--brand); }
+
+  &--on {
+    background: var(--brand-muted);
+    border-color: var(--brand);
+    color: var(--brand);
+  }
+}
+
+// ── Error banner ──────────────────────────────────────────────────────────
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(220,38,38,.06);
+  border: 1px solid rgba(220,38,38,.25);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--status-danger);
+  margin-bottom: 14px;
+  flex-shrink: 0;
+
+  &__close {
+    margin-left: auto;
+    background: none;
+    border: none;
+    font-size: 12px;
+    color: var(--status-danger);
+    cursor: pointer;
+    opacity: 0.6;
+    &:hover { opacity: 1; }
+  }
+}
+
+// ── Live badge ────────────────────────────────────────────────────────────
+.live-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(22,163,74,.12);
+  color: var(--status-success);
+  border: 1px solid rgba(22,163,74,.25);
+}
+
+.run-card--live {
+  border-color: rgba(22,163,74,.25) !important;
+}
+
+.run-card__live-tag {
+  font-size: 10px;
+  color: var(--status-success);
+  font-weight: 500;
+}

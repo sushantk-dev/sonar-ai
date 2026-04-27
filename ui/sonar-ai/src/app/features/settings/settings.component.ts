@@ -1,6 +1,7 @@
 // src/app/features/settings/settings.component.ts
-import { Component, signal } from '@angular/core';
+import { Component, signal, inject, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { ApiService } from '../../core/api.service';
 import { FormsModule } from '@angular/forms';
 
 interface Tab { id: string; label: string; icon: string; }
@@ -12,7 +13,10 @@ interface Tab { id: string; label: string; icon: string; }
   templateUrl: './settings.component.html',
   styleUrl:    './settings.component.scss',
 })
-export class SettingsComponent {
+export class SettingsComponent implements OnInit {
+  private apiSvc = inject(ApiService);
+  loading = false;
+  saveError = '';
   active = signal('pipeline');
   saved  = false;
 
@@ -45,6 +49,29 @@ export class SettingsComponent {
     langsmithKey:     '',
     langsmithProject: 'sonar-ai',
   };
+
+  ngOnInit() {
+    this.loading = true;
+    this.apiSvc.getConfig().subscribe({
+      next: (cfg) => {
+        this.loading = false;
+        this.cfg.gcpProject       = cfg.gcp_project           ?? this.cfg.gcpProject;
+        this.cfg.model            = cfg.vertex_model          ?? this.cfg.model;
+        this.cfg.maxIssues        = cfg.max_issues            ?? this.cfg.maxIssues;
+        this.cfg.maxTokens        = cfg.max_tokens            ?? this.cfg.maxTokens;
+        this.cfg.highThresh       = cfg.confidence_high_threshold   ?? this.cfg.highThresh;
+        this.cfg.medThresh        = cfg.confidence_medium_threshold ?? this.cfg.medThresh;
+        this.cfg.sonarOrg         = cfg.sonar_host_url        ?? this.cfg.sonarOrg;
+        this.cfg.maxRetries       = cfg.max_critic_retries    ?? this.cfg.maxRetries;
+        this.cfg.chromaPath       = cfg.chroma_persist_dir    ?? this.cfg.chromaPath;
+        this.cfg.embeddingModel   = cfg.embedding_model       ?? this.cfg.embeddingModel;
+        this.cfg.ragTopK          = cfg.rag_top_k             ?? this.cfg.ragTopK;
+        this.cfg.langsmithProject = cfg.langsmith_project     ?? this.cfg.langsmithProject;
+        this.cfg.tracingEnabled   = cfg.langchain_tracing     ?? this.cfg.tracingEnabled;
+      },
+      error: () => { this.loading = false; /* API offline — use defaults */ },
+    });
+  }
 
   get envSnippet(): string {
     const key     = this.cfg.langsmithKey || '<your-key>';
