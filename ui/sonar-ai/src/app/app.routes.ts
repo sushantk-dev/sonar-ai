@@ -19,6 +19,11 @@ export const routes: Routes = [
       import('./features/issues/issues.component').then(m => m.IssuesComponent),
   },
   {
+    path: 'escalations',
+    loadComponent: () =>
+      import('./features/escalations/escalations.component').then(m => m.EscalationsComponent),
+  },
+  {
     path: 'settings',
     loadComponent: () =>
       import('./features/settings/settings.component').then(m => m.SettingsComponent),

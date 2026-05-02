@@ -52,6 +52,15 @@ import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
             Issues
           </a>
 
+          <a routerLink="/escalations" routerLinkActive="is-active" class="nav-link">
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+              <path d="M7.5 1.5L13 12.5H2L7.5 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+              <path d="M7.5 5.5V8.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              <circle cx="7.5" cy="10.5" r=".7" fill="currentColor"/>
+            </svg>
+            Escalations
+          </a>
+
           <a routerLink="/settings" routerLinkActive="is-active" class="nav-link">
             <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
               <circle cx="7.5" cy="7.5" r="2.2" stroke="currentColor" stroke-width="1.3"/>

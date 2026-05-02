@@ -408,6 +408,86 @@ def list_runs() -> dict:
     return {"runs": summaries}
 
 
+@app.get("/api/escalations")
+def list_escalations() -> dict:
+    """List all escalation markdown files from the escalations/ directory."""
+    from config import settings as s
+    esc_dir = Path(s.escalation_dir)
+    if not esc_dir.exists():
+        return {"escalations": [], "total": 0}
+
+    items = []
+    for md_file in sorted(esc_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True):
+        stat = md_file.stat()
+        # Parse key fields from filename: {safe_key}_{rule_short}.md
+        name  = md_file.stem          # e.g. "AYx1_S2259"
+        parts = name.split("_", 1)
+        issue_key = parts[0] if parts else name
+        rule_short = parts[1] if len(parts) > 1 else ""
+
+        # Peek first few lines to extract severity and file
+        content = md_file.read_text(encoding="utf-8", errors="replace")
+        severity = "UNKNOWN"
+        file_name = ""
+        rule_key  = ""
+        for line in content.splitlines():
+            if "| Severity |" in line:
+                severity = line.split("|")[2].strip().strip("`")
+            if "| File |" in line:
+                file_name = line.split("|")[2].strip().strip("`")
+            if "| Rule |" in line:
+                rule_key = line.split("|")[2].strip().strip("`")
+            if severity != "UNKNOWN" and file_name and rule_key:
+                break
+
+        items.append({
+            "filename":  md_file.name,
+            "issue_key": issue_key,
+            "rule_key":  rule_key or rule_short,
+            "severity":  severity,
+            "file_name": file_name,
+            "size_bytes": stat.st_size,
+            "modified_at": stat.st_mtime,
+        })
+
+    return {"escalations": items, "total": len(items)}
+
+
+@app.get("/api/escalations/{filename}")
+def get_escalation(filename: str) -> dict:
+    """Return the full markdown content of one escalation file."""
+    from config import settings as s
+    # Sanitise — only allow .md files, no path traversal
+    if not filename.endswith(".md") or "/" in filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
+
+    esc_path = Path(s.escalation_dir) / filename
+    if not esc_path.exists():
+        raise HTTPException(404, f"Escalation {filename} not found")
+
+    return {
+        "filename": filename,
+        "content":  esc_path.read_text(encoding="utf-8", errors="replace"),
+        "modified_at": esc_path.stat().st_mtime,
+    }
+
+
+@app.delete("/api/escalations/{filename}")
+def delete_escalation(filename: str) -> dict:
+    """Delete an escalation file."""
+    from config import settings as s
+    if not filename.endswith(".md") or "/" in filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
+
+    esc_path = Path(s.escalation_dir) / filename
+    if not esc_path.exists():
+        raise HTTPException(404, f"Escalation {filename} not found")
+
+    esc_path.unlink()
+    logger.info(f"[API] Deleted escalation: {filename}")
+    return {"message": f"Deleted {filename}"}
+
+
 @app.get("/api/config")
 def get_config() -> dict:
     from config import settings as s
