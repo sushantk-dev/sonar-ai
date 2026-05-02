@@ -103,6 +103,10 @@ export class ApiService {
     return this.http.get<any>(`${this.base}/api/issues`);
   }
 
+  deleteIssue(key: string): Observable<{ message: string; remaining: number }> {
+    return this.http.delete<any>(`${this.base}/api/issues/${key}`);
+  }
+
   // ── Pipeline ──────────────────────────────────────────────────────────────
 
   startRun(req: RunRequest): Observable<{ run_id: string; status: string }> {

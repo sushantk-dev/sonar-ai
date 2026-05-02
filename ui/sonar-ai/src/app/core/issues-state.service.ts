@@ -115,8 +115,21 @@ export class IssuesStateService {
   }
 
   confirmDelete(key: string) {
+    // Remove from UI immediately (optimistic)
     this._issues.update(list => list.filter(i => i.key !== key));
     this.deleteConfirmKey.set(null);
+
+    // Persist deletion to backend — rewrites the uploads file
+    this.apiSvc.deleteIssue(key).subscribe({
+      next: () => {},   // already removed from UI
+      error: () => {
+        // API offline — deletion is in-memory only this session
+        // Warn via uploadError so user knows it won't persist
+        this.uploadError.set(
+          `Issue removed from view but backend is offline — deletion may not persist after restart`
+        );
+      },
+    });
   }
 
   cancelDelete() {

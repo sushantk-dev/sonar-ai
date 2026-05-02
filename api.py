@@ -259,6 +259,44 @@ def get_issues() -> dict:
     return {"issues": _last_report_issues, "total": len(_last_report_issues)}
 
 
+@app.delete("/api/issues/{key}")
+def delete_issue(key: str) -> dict:
+    """
+    Remove an issue from memory and rewrite the saved report JSON file
+    so the deletion persists across restarts.
+    """
+    global _last_report_issues
+
+    before = len(_last_report_issues)
+    _last_report_issues = [i for i in _last_report_issues if i.get("key") != key]
+    after  = len(_last_report_issues)
+
+    if before == after:
+        raise HTTPException(404, f"Issue {key} not found")
+
+    # Rewrite the saved report file so the deletion survives a restart
+    report_path = Path(__file__).parent / "uploads" / "sonar-ai-last-report.json"
+    if report_path.exists():
+        try:
+            existing = json.loads(report_path.read_text())
+
+            # Support both { "issues": [...] } and flat array shapes
+            if isinstance(existing, dict) and "issues" in existing:
+                existing["issues"] = [
+                    i for i in existing["issues"] if i.get("key") != key
+                ]
+                report_path.write_text(json.dumps(existing, indent=2))
+            elif isinstance(existing, list):
+                filtered = [i for i in existing if i.get("key") != key]
+                report_path.write_text(json.dumps(filtered, indent=2))
+
+            logger.info(f"[Delete] Removed issue {key} — {after} issues remain in file")
+        except Exception as exc:
+            logger.warning(f"[Delete] Could not rewrite report file: {exc}")
+
+    return {"message": f"Issue {key} deleted", "remaining": after}
+
+
 @app.post("/api/pipeline/run")
 def start_run(req: PipelineRunRequest) -> dict:
     report_path = str(Path(__file__).parent / "uploads" / "sonar-ai-last-report.json")
