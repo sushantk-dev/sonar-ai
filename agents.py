@@ -76,20 +76,45 @@ def _clean_patch_hunks(patch: str) -> str:
 # ── Node helpers ──────────────────────────────────────────────────────────────
 
 def _rule_kb_entry_text(state: AgentState) -> str:
-    """Format the Rule KB entry for the current issue, or a generic note if missing."""
+    """Format the Rule KB entry for the current issue, or a generic note if missing.
+
+    Supports both legacy schema (name/short/severity/description/fix_strategy/examples)
+    and the extended FindBugs-compatible schema that adds type, tags, and impacts.
+    """
     rule_kb: dict = state.get("rule_kb", {})
     issue = state.get("current_issue", {})
     rule_key = issue.get("rule_key", "")
     entry = rule_kb.get(rule_key)
-    if entry:
-        return (
-            f"Name: {entry.get('name', '')}\n"
-            f"Description: {entry.get('description', '')}\n"
-            f"Fix Strategy: {entry.get('fix_strategy', '')}\n"
-            f"Example Before: {entry.get('example_before', '')}\n"
-            f"Example After: {entry.get('example_after', '')}"
-        )
-    return f"No KB entry for rule {rule_key}. Apply generic best-practice remediation."
+    if not entry:
+        return f"No KB entry for rule {rule_key}. Apply generic best-practice remediation."
+
+    # -- Core fields (always present) ------------------------------------------
+    lines = [
+        f"Name: {entry.get('name', '')}",
+        f"Description: {entry.get('description', '')}",
+        f"Fix Strategy: {entry.get('fix_strategy', '')}",
+        f"Example Before: {entry.get('example_before', '')}",
+        f"Example After: {entry.get('example_after', '')}",
+    ]
+
+    # -- Extended fields (FindBugs-compatible schema) ---------------------------
+    rule_type = entry.get("type")
+    if rule_type:
+        lines.append(f"Type: {rule_type}")
+
+    tags = entry.get("tags")
+    if tags:
+        lines.append(f"Tags: {', '.join(tags)}")
+
+    impacts = entry.get("impacts")
+    if impacts:
+        impact_strs = [
+            f"{imp.get('softwareQuality', '')} ({imp.get('severity', '')})"
+            for imp in impacts
+        ]
+        lines.append(f"Impacts: {'; '.join(impact_strs)}")
+
+    return "\n".join(lines)
 
 
 # ── RAG node ─────────────────────────────────────────────────────────────────
