@@ -1,10 +1,20 @@
 // src/app/core/pipeline-state.service.ts
-import { Injectable, inject, signal, computed } from '@angular/core';
+import { Injectable, inject, signal } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { ApiService, RunStatus, PipelineStep } from './api.service';
 import { DataService } from './data.service';
 
 export type ConfLabel = 'HIGH' | 'MEDIUM' | 'LOW' | null;
+
+export interface RunRequest {
+  repo_url:   string;
+  commit_sha: string;
+  max_issues: number;
+  parallel:   boolean;
+  rescan:     boolean;
+  no_rag:     boolean;
+  dry_run:    boolean;
+}
 
 export interface UiRun {
   id:          string;
@@ -19,6 +29,7 @@ export interface UiRun {
   retries?:    number;
   live:        boolean;
   status?:     'queued' | 'running' | 'done' | 'error' | 'cancelled';
+  request?:    RunRequest;   // ← the exact input that was passed
 }
 
 @Injectable({ providedIn: 'root' })
@@ -26,13 +37,11 @@ export class PipelineStateService {
   private api  = inject(ApiService);
   private data = inject(DataService);
 
-  // ── Persisted across navigation (singleton) ───────────────────────────────
   runs     = signal<UiRun[]>(this._seedRuns());
   selected = signal<UiRun | null>(null);
   running  = signal(false);
   error    = signal<string | null>(null);
 
-  // Active run tracking for cancel
   private _activeRunId: string | null = null;
   private _poll?: Subscription;
 
@@ -57,16 +66,16 @@ export class PipelineStateService {
       retries:    r.retries,
       live:       false,
       status:     'done',
+      request:    undefined,
     }));
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
   select(run: UiRun)   { this.selected.set(run); }
   doneCnt(run: UiRun)  { return run.steps.filter(s => s.status === 'done').length; }
   confClass(c: ConfLabel | string | undefined) { return (c ?? '').toLowerCase(); }
 
   outcomeIcon(o?: string) {
-    return { pr_opened: '✓', draft_pr: '~', escalated: '!', error: '✕', cancelled: '◼' }[o ?? ''] ?? '?';
+    return { pr_opened:'✓', draft_pr:'~', escalated:'!', error:'✕', cancelled:'◼' }[o ?? ''] ?? '?';
   }
 
   outcomeTitle(o?: string) {
@@ -85,17 +94,13 @@ export class PipelineStateService {
     return 'LOW';
   }
 
-  // ── Start ─────────────────────────────────────────────────────────────────
-  startRun(req: {
-    repo_url: string; commit_sha: string; max_issues: number;
-    parallel: boolean; rescan: boolean; no_rag: boolean; dry_run: boolean;
-  }) {
+  startRun(req: RunRequest) {
     if (this.running()) return;
     this.running.set(true);
     this.error.set(null);
 
     this.api.startRun(req).subscribe({
-      next: ({ run_id }) => this._pollRun(run_id),
+      next: ({ run_id }) => this._pollRun(run_id, req),
       error: (err: Error) => {
         this.error.set(err.message);
         this.running.set(false);
@@ -103,7 +108,7 @@ export class PipelineStateService {
     });
   }
 
-  private _pollRun(runId: string) {
+  private _pollRun(runId: string, req: RunRequest) {
     this._activeRunId = runId;
 
     const liveRun: UiRun = {
@@ -113,8 +118,9 @@ export class PipelineStateService {
       component: '',
       steps: ['Ingest','Load Repo','RAG Fetch','Planner','Generator','Critic','Validate','Deliver']
         .map(label => ({ label, status: 'pending' as const, detail: '', ms: 0 })),
-      live:   true,
-      status: 'running',
+      live:    true,
+      status:  'running',
+      request: req,   // ← store the input immediately
     };
 
     this.runs.update(rs => [liveRun, ...rs]);
@@ -134,20 +140,18 @@ export class PipelineStateService {
     this.runs.update(rs => rs.map(r => {
       if (r.id !== runId) return r;
       const first = status.results?.[0];
-      const updated: UiRun = {
+      return {
         ...r,
         steps:      status.steps ?? r.steps,
         outcome:    first?.outcome,
         confidence: first ? this.confLabel(first.confidence) : undefined,
         prUrl:      first?.pr_url ?? undefined,
         status:     status.status,
+        ruleKey:    first?.rule_key  ?? r.ruleKey,
+        severity:   first?.severity  ?? r.severity,
+        component:  first?.file_path ?? r.component,
+        // request preserved from the original liveRun — never overwritten
       };
-      if (first) {
-        updated.ruleKey   = first.rule_key;
-        updated.severity  = first.severity;
-        updated.component = first.file_path;
-      }
-      return updated;
     }));
 
     if (this.selected()?.id === runId) {
@@ -168,6 +172,9 @@ export class PipelineStateService {
   }
 
   private _explodeResults(runId: string, status: RunStatus) {
+    // Preserve the request from the parent run
+    const parentReq = this.runs().find(r => r.id === runId)?.request;
+
     const newCards: UiRun[] = status.results.map((r, i) => ({
       id:         `${runId}-${i}`,
       ruleKey:    r.rule_key,
@@ -179,28 +186,22 @@ export class PipelineStateService {
       steps:      status.steps ?? [],
       live:       true,
       status:     'done' as const,
+      request:    parentReq,
     }));
 
     this.runs.update(rs => [...newCards, ...rs.filter(r => r.id !== runId)]);
     if (newCards[0]) this.selected.set(newCards[0]);
   }
 
-  // ── Cancel / Stop ─────────────────────────────────────────────────────────
   cancelRun() {
     const runId = this._activeRunId;
     if (!runId) return;
 
-    // Stop polling immediately
     this._poll?.unsubscribe();
     this._poll = undefined;
 
-    // Call backend cancel endpoint
-    this.api.cancelRun(runId).subscribe({
-      next: () => {},
-      error: () => {}, // best-effort
-    });
+    this.api.cancelRun(runId).subscribe({ error: () => {} });
 
-    // Mark run as cancelled in UI instantly
     this.runs.update(rs => rs.map(r => {
       if (r.id !== runId) return r;
       return {
@@ -208,15 +209,15 @@ export class PipelineStateService {
         status:  'cancelled',
         outcome: 'cancelled',
         steps: r.steps.map(s =>
-          s.status === 'running' ? { ...s, status: 'error' as const, detail: 'Cancelled by user' } : s
+          s.status === 'running'
+            ? { ...s, status: 'error' as const, detail: 'Cancelled by user' }
+            : s
         ),
       };
     }));
 
     const updated = this.runs().find(r => r.id === runId);
-    if (updated && this.selected()?.id === runId) {
-      this.selected.set(updated);
-    }
+    if (updated && this.selected()?.id === runId) this.selected.set(updated);
 
     this.running.set(false);
     this._activeRunId = null;
