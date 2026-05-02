@@ -12,18 +12,60 @@ export class IssuesStateService {
   private apiSvc = inject(ApiService);
 
   // ── All state as signals — persists for full app lifetime ─────────────────
-  private _issues    = signal<SonarIssue[]>([...this.data.issues]);
+  private _issues    = signal<SonarIssue[]>([]);  // starts empty, filled from API
+
   private _search    = signal('');
   private _sevFilter = signal('ALL');
   private _outFilter = signal('ALL');
   private _page      = signal(0);
 
+  loaded           = signal(false);   // true once API fetch attempted
   uploading        = signal(false);
   uploadMsg        = signal('');
   uploadError      = signal('');
   deleteConfirmKey = signal<string | null>(null);
 
   readonly PAGE_SIZE = 10;
+
+  constructor() {
+    // On startup, fetch any report already on the backend (survives restart)
+    this._fetchFromApi();
+  }
+
+  private _fetchFromApi() {
+    this.apiSvc.getIssues().subscribe({
+      next: (data) => {
+        if (data.total > 0) {
+          // Backend has a saved report — load it
+          this._issues.set(this._mapApiIssues(data.issues));
+          this.uploadMsg.set(`Loaded ${data.total} issues from saved report`);
+        } else {
+          // No report on backend yet — fall back to mock data
+          this._issues.set([...this.data.issues]);
+        }
+        this.loaded.set(true);
+      },
+      error: () => {
+        // API offline — show mock data so UI isn't blank
+        this._issues.set([...this.data.issues]);
+        this.loaded.set(true);
+      },
+    });
+  }
+
+  private _mapApiIssues(raw: any[]): SonarIssue[] {
+    return raw.map((i: any) => ({
+      key:       i.key       ?? i.id ?? crypto.randomUUID(),
+      ruleKey:   i.rule_key  ?? i.rule ?? i.ruleKey ?? '',
+      severity:  (i.severity ?? 'INFO') as Severity,
+      component: i.component ?? '',
+      line:      i.line      ?? 0,
+      message:   i.message   ?? '',
+      effort:    i.effort    ?? '',
+      status:    i.status    ?? 'OPEN',
+      outcome:   'pending' as const,
+    }));
+  }
 
   // ── Public getters / setters ──────────────────────────────────────────────
   get search()    { return this._search(); }
@@ -93,18 +135,7 @@ export class IssuesStateService {
         this.uploadMsg.set(`Loaded ${res.issue_count} issues from ${file.name}`);
         this.apiSvc.getIssues().subscribe({
           next: (data) => {
-            const mapped: SonarIssue[] = data.issues.map((i: any) => ({
-              key:       i.key,
-              ruleKey:   i.rule_key,
-              severity:  i.severity as Severity,
-              component: i.component,
-              line:      i.line,
-              message:   i.message,
-              effort:    i.effort,
-              status:    i.status,
-              outcome:   'pending' as const,
-            }));
-            this._issues.set(mapped);
+            this._issues.set(this._mapApiIssues(data.issues));
             this._page.set(0);
           },
           error: () => this._parseLocally(file),

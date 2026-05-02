@@ -463,8 +463,20 @@ def update_config(req: ConfigUpdateRequest) -> dict:
 
 @app.on_event("startup")
 def _startup() -> None:
+    global _last_report_issues
     # Required on macOS/Windows for multiprocessing to work correctly with uvicorn
     multiprocessing.set_start_method("spawn", force=True)
+
+    # Pre-load any previously uploaded report so GET /api/issues works after restart
+    report_path = Path(__file__).parent / "uploads" / "sonar-ai-last-report.json"
+    if report_path.exists():
+        try:
+            from parser import parse_sonar_report
+            issues = parse_sonar_report(str(report_path))
+            _last_report_issues = [dict(i) for i in issues]
+            logger.info(f"[Startup] Loaded {len(_last_report_issues)} issues from {report_path}")
+        except Exception as exc:
+            logger.warning(f"[Startup] Could not load saved report: {exc}")
 
 
 @app.on_event("shutdown")
