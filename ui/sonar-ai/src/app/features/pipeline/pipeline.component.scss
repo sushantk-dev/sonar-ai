@@ -922,3 +922,35 @@
 
 .run-card:hover .run-card__del { opacity: 0.5; }
 .run-card--active .run-card__del { opacity: 0.5; }
+
+// ── SHA input with HEAD button ────────────────────────────────────────────
+.sha-wrap {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+
+  .run-form__input { flex: 1; }
+}
+
+.sha-head-btn {
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-md);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s;
+  flex-shrink: 0;
+
+  &:hover { border-color: var(--brand-ring); color: var(--brand); }
+
+  &--active {
+    background: var(--brand-muted);
+    border-color: var(--brand);
+    color: var(--brand);
+  }
+}

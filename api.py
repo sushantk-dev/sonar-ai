@@ -140,11 +140,40 @@ def _pipeline_worker(
 
         _log.info = _intercepting_info  # type: ignore[method-assign]
 
+        # Resolve HEAD / empty commit_sha to the actual SHA
+        commit_sha = req_dict.get("commit_sha", "").strip()
+        if not commit_sha or commit_sha.upper() in ("HEAD", "LATEST", ""):
+            try:
+                import subprocess, tempfile as _tmp
+                from config import settings as _cfg
+                from repo_loader import _inject_token, _repo_name_from_url
+                _auth_url   = _inject_token(req_dict["repo_url"], _cfg.github_token)
+                _repo_name  = _repo_name_from_url(req_dict["repo_url"])
+                _local_path = Path(_cfg.clone_dir) / _repo_name
+                if _local_path.exists():
+                    import git as _git
+                    _repo      = _git.Repo(_local_path)
+                    commit_sha = _repo.head.commit.hexsha
+                else:
+                    # Not cloned yet — use ls-remote to get HEAD SHA without cloning
+                    result = subprocess.run(
+                        ["git", "ls-remote", _auth_url, "HEAD"],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if result.returncode == 0 and result.stdout:
+                        commit_sha = result.stdout.split()[0]
+                    else:
+                        commit_sha = "HEAD"  # fallback — let git handle it
+                logger.info(f"[API] Resolved HEAD → {commit_sha[:12]}")
+            except Exception as _exc:
+                logger.warning(f"[API] Could not resolve HEAD SHA: {_exc} — using HEAD")
+                commit_sha = "HEAD"
+
         t0 = time.time()
         final_state = run_pipeline(
             sonar_report_path=report_path,
             repo_url=req_dict["repo_url"],
-            commit_sha=req_dict["commit_sha"],
+            commit_sha=commit_sha,
             max_issues=req_dict.get("max_issues", 0),
         )
         elapsed_ms = int((time.time() - t0) * 1000)

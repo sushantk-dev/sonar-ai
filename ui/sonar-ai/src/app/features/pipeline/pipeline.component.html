@@ -37,9 +37,16 @@
       </div>
       <div class="run-form__field">
         <label>Commit SHA</label>
-        <input class="run-form__input" [value]="commitSha()"
-               (input)="commitSha.set($any($event.target).value)"
-               placeholder="abc1234 (or HEAD)">
+        <div class="sha-wrap">
+          <input class="run-form__input" [value]="commitSha()"
+                 (input)="commitSha.set($any($event.target).value)"
+                 placeholder="abc1234">
+          <button type="button" class="sha-head-btn"
+                  [class.sha-head-btn--active]="commitSha() === 'HEAD' || commitSha() === ''"
+                  (click)="commitSha.set('HEAD')">
+            HEAD
+          </button>
+        </div>
       </div>
       <div class="run-form__field run-form__field--sm">
         <label>Max Issues</label>

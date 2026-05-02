@@ -19,7 +19,7 @@ export class PipelineComponent {
 
   // ── Run form signals ──────────────────────────────────────────────────────
   repoUrl   = signal('https://github.com/org/repo.git');
-  commitSha = signal('');
+  commitSha = signal('HEAD');
   maxIssues = signal(0);
   parallel  = signal(false);
   rescan    = signal(false);
