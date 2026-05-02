@@ -19,9 +19,6 @@ export interface AppConfig {
   chromaPath:     string;
   embeddingModel: string;
   ragTopK:        number;
-  tracingEnabled: boolean;
-  langsmithKey:   string;
-  langsmithProject: string;
 }
 
 export const VERTEX_MODELS = [
@@ -45,7 +42,6 @@ export const EMBEDDING_MODELS = [
 export interface TokenStatus {
   githubToken:  boolean;   // true = set in .env
   sonarToken:   boolean;
-  langsmithKey: boolean;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -69,16 +65,12 @@ export class SettingsStateService {
     chromaPath:     './chroma_db',
     embeddingModel: 'text-embedding-005',
     ragTopK:        3,
-    tracingEnabled: false,
-    langsmithKey:   '',
-    langsmithProject: 'sonar-ai',
   });
 
   // Which tokens are already set on the backend
   tokenStatus = signal<TokenStatus>({
     githubToken:  false,
     sonarToken:   false,
-    langsmithKey: false,
   });
 
   // Track which token fields the user is actively editing
@@ -124,7 +116,6 @@ export class SettingsStateService {
         this.tokenStatus.set({
           githubToken:  remote.github_token    === '***',
           sonarToken:   remote.sonar_token     === '***',
-          langsmithKey: remote.langsmith_api_key === '***',
         });
 
         this.cfg.update(c => ({
@@ -140,13 +131,10 @@ export class SettingsStateService {
           chromaPath:     remote.chroma_persist_dir          || c.chromaPath,
           embeddingModel: remote.embedding_model             || c.embeddingModel,
           ragTopK:        remote.rag_top_k                   ?? c.ragTopK,
-          langsmithProject: remote.langsmith_project         || c.langsmithProject,
-          tracingEnabled: remote.langchain_tracing           ?? c.tracingEnabled,
           // Tokens: keep empty — we show the masked placeholder UI instead
           githubToken:    '',
           sonarToken:     '',
-          langsmithKey:   '',
-        }));
+                }));
 
         this.loaded.set(true);
         this.loadErr.set('');
@@ -183,15 +171,12 @@ export class SettingsStateService {
       chroma_persist_dir:          c.chromaPath,
       embedding_model:             c.embeddingModel,
       rag_top_k:                   c.ragTopK,
-      langsmith_project:           c.langsmithProject,
-      langchain_tracing:           c.tracingEnabled,
     };
 
     // Only include token fields if user was actively editing them
     const editing = this.editingTokens();
     if (editing.has('githubToken'))  payload['github_token']     = c.githubToken;
     if (editing.has('sonarToken'))   payload['sonar_token']      = c.sonarToken;
-    if (editing.has('langsmithKey')) payload['langsmith_api_key'] = c.langsmithKey;
 
     this.apiSvc.saveConfig(payload).subscribe({
       next: () => {
@@ -203,12 +188,11 @@ export class SettingsStateService {
           ...ts,
           ...(editing.has('githubToken')  ? { githubToken:  !!c.githubToken  } : {}),
           ...(editing.has('sonarToken')   ? { sonarToken:   !!c.sonarToken   } : {}),
-          ...(editing.has('langsmithKey') ? { langsmithKey: !!c.langsmithKey } : {}),
         }));
 
         // Clear editing state and token values after save
         this.editingTokens.set(new Set());
-        this.cfg.update(cc => ({ ...cc, githubToken: '', sonarToken: '', langsmithKey: '' }));
+        this.cfg.update(cc => ({ ...cc, githubToken: '', sonarToken: '' }));
 
         setTimeout(() => this.saved.set(false), 2500);
       },
@@ -219,15 +203,4 @@ export class SettingsStateService {
     });
   }
 
-  get envSnippet(): string {
-    const c = this.cfg();
-    const key  = c.langsmithKey     || '<your-key>';
-    const proj = c.langsmithProject || 'sonar-ai';
-    return [
-      `LANGCHAIN_TRACING_V2=${c.tracingEnabled ? 'true' : 'false'}`,
-      `LANGCHAIN_ENDPOINT=https://api.smith.langchain.com`,
-      `LANGCHAIN_API_KEY=${key}`,
-      `LANGCHAIN_PROJECT=${proj}`,
-    ].join('\n');
-  }
 }

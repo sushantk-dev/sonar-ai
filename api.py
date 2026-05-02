@@ -393,9 +393,6 @@ def get_config() -> dict:
         "embedding_model":            s.embedding_model,
         "rag_top_k":                  s.rag_top_k,
         "enable_rag":                 s.enable_rag,
-        "langsmith_project":          s.langsmith_project,
-        "langsmith_api_key":          mask(s.langsmith_api_key),
-        "langchain_tracing":          bool(s.langsmith_api_key),
         "parallel_issues":            s.parallel_issues,
         "enable_sonar_rescan":        s.enable_sonar_rescan,
     }
@@ -407,7 +404,7 @@ def update_config(req: ConfigUpdateRequest) -> dict:
     lines: list[str] = env_path.read_text().splitlines() if env_path.exists() else []
 
     # For token fields, include empty string (explicit clear); skip None (not provided)
-    token_fields = {"github_token", "sonar_token", "langsmith_api_key"}
+    token_fields = {"github_token", "sonar_token"}
     mapping: dict[str, Any] = {
         k: v for k, v in req.model_dump().items()
         if v is not None or k in token_fields
@@ -432,9 +429,6 @@ def update_config(req: ConfigUpdateRequest) -> dict:
         "chroma_persist_dir":         "CHROMA_PERSIST_DIR",
         "embedding_model":            "EMBEDDING_MODEL",
         "rag_top_k":                  "RAG_TOP_K",
-        "langsmith_api_key":          "LANGSMITH_API_KEY",
-        "langsmith_project":          "LANGSMITH_PROJECT",
-        "langchain_tracing":          "LANGCHAIN_TRACING_V2",
     }
 
     updated: set[str] = set()
