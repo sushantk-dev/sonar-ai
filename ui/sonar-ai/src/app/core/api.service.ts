@@ -137,6 +137,20 @@ export class ApiService {
     return this.http.get<any>(`${this.base}/api/pipeline/runs`);
   }
 
+  // ── Escalations ──────────────────────────────────────────────────────────────
+
+  listEscalations(): Observable<{ escalations: any[]; total: number }> {
+    return this.http.get<any>(`${this.base}/api/escalations`);
+  }
+
+  getEscalation(filename: string): Observable<{ filename: string; content: string; modified_at: number }> {
+    return this.http.get<any>(`${this.base}/api/escalations/${filename}`);
+  }
+
+  deleteEscalation(filename: string): Observable<{ message: string }> {
+    return this.http.delete<any>(`${this.base}/api/escalations/${filename}`);
+  }
+
   // ── Config ────────────────────────────────────────────────────────────────
 
   getConfig(): Observable<BackendConfig> {
