@@ -68,9 +68,9 @@ class ConfigUpdateRequest(BaseModel):
     max_tokens:                  Optional[int]   = None
     confidence_high_threshold:   Optional[float] = None
     confidence_medium_threshold: Optional[float] = None
-    github_token:                Optional[str]   = None
+    github_token:                Optional[str]   = None   # empty string = clear token
     github_repo:                 Optional[str]   = None
-    sonar_token:                 Optional[str]   = None
+    sonar_token:                 Optional[str]   = None   # empty string = clear token
     sonar_org:                   Optional[str]   = None
     planner_temp:                Optional[float] = None
     generator_temp:              Optional[float] = None
@@ -406,8 +406,17 @@ def update_config(req: ConfigUpdateRequest) -> dict:
     env_path = Path(".env")
     lines: list[str] = env_path.read_text().splitlines() if env_path.exists() else []
 
+    # For token fields, include empty string (explicit clear); skip None (not provided)
+    token_fields = {"github_token", "sonar_token", "langsmith_api_key"}
     mapping: dict[str, Any] = {
-        k: v for k, v in req.model_dump().items() if v is not None
+        k: v for k, v in req.model_dump().items()
+        if v is not None or k in token_fields
+        if not (v is None and k not in token_fields)
+    }
+    # Re-filter: include non-None values AND token fields even if empty string
+    mapping = {
+        k: v for k, v in req.model_dump().items()
+        if v is not None or (k in token_fields and v == "")
     }
 
     env_key_map = {

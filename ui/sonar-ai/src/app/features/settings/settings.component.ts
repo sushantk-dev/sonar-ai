@@ -1,8 +1,12 @@
 // src/app/features/settings/settings.component.ts
-import { Component, signal, inject, OnInit } from '@angular/core';
+import { Component, inject, signal, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ApiService } from '../../core/api.service';
 import { FormsModule } from '@angular/forms';
+import {
+  SettingsStateService,
+  VERTEX_MODELS,
+  EMBEDDING_MODELS,
+} from '../../core/settings-state.service';
 
 interface Tab { id: string; label: string; icon: string; }
 
@@ -14,11 +18,11 @@ interface Tab { id: string; label: string; icon: string; }
   styleUrl:    './settings.component.scss',
 })
 export class SettingsComponent implements OnInit {
-  private apiSvc = inject(ApiService);
-  loading = false;
-  saveError = '';
+  st = inject(SettingsStateService);
   active = signal('pipeline');
-  saved  = false;
+
+  readonly vertexModels    = VERTEX_MODELS;
+  readonly embeddingModels = EMBEDDING_MODELS;
 
   tabs: Tab[] = [
     { id: 'pipeline', label: 'Pipeline', icon: 'M3 6h18M3 12h18M3 18h18' },
@@ -27,66 +31,20 @@ export class SettingsComponent implements OnInit {
     { id: 'tracing',  label: 'Tracing',  icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z' },
   ];
 
-  cfg = {
-    gcpProject:       'my-sonar-ai-project',
-    model:            'gemini-1.5-pro',
-    maxIssues:        20,
-    maxTokens:        4096,
-    highThresh:       0.85,
-    medThresh:        0.60,
-    githubToken:      '',
-    githubRepo:       'org/repo',
-    commitSha:        '',
-    sonarToken:       '',
-    sonarOrg:         'my-org',
-    plannerTemp:      0.2,
-    generatorTemp:    0.1,
-    maxRetries:       1,
-    chromaPath:       './chroma_db',
-    embeddingModel:   'all-MiniLM-L6-v2',
-    ragTopK:          3,
-    tracingEnabled:   true,
-    langsmithKey:     '',
-    langsmithProject: 'sonar-ai',
-  };
+  ngOnInit() { this.st.load(); }
 
-  ngOnInit() {
-    this.loading = true;
-    this.apiSvc.getConfig().subscribe({
-      next: (cfg) => {
-        this.loading = false;
-        this.cfg.gcpProject       = cfg.gcp_project           ?? this.cfg.gcpProject;
-        this.cfg.model            = cfg.vertex_model          ?? this.cfg.model;
-        this.cfg.maxIssues        = cfg.max_issues            ?? this.cfg.maxIssues;
-        this.cfg.maxTokens        = cfg.max_tokens            ?? this.cfg.maxTokens;
-        this.cfg.highThresh       = cfg.confidence_high_threshold   ?? this.cfg.highThresh;
-        this.cfg.medThresh        = cfg.confidence_medium_threshold ?? this.cfg.medThresh;
-        this.cfg.sonarOrg         = cfg.sonar_host_url        ?? this.cfg.sonarOrg;
-        this.cfg.maxRetries       = cfg.max_critic_retries    ?? this.cfg.maxRetries;
-        this.cfg.chromaPath       = cfg.chroma_persist_dir    ?? this.cfg.chromaPath;
-        this.cfg.embeddingModel   = cfg.embedding_model       ?? this.cfg.embeddingModel;
-        this.cfg.ragTopK          = cfg.rag_top_k             ?? this.cfg.ragTopK;
-        this.cfg.langsmithProject = cfg.langsmith_project     ?? this.cfg.langsmithProject;
-        this.cfg.tracingEnabled   = cfg.langchain_tracing     ?? this.cfg.tracingEnabled;
-      },
-      error: () => { this.loading = false; /* API offline — use defaults */ },
-    });
-  }
+  get cfg()         { return this.st.cfg(); }
+  get tokenStatus() { return this.st.tokenStatus(); }
+  get saving()      { return this.st.saving(); }
+  get saved()       { return this.st.saved(); }
+  get saveErr()     { return this.st.saveErr(); }
+  get loadErr()     { return this.st.loadErr(); }
+  get envSnippet()  { return this.st.envSnippet; }
 
-  get envSnippet(): string {
-    const key     = this.cfg.langsmithKey || '<your-key>';
-    const proj    = this.cfg.langsmithProject || 'sonar-ai';
-    const enabled = this.cfg.tracingEnabled ? 'true' : 'false';
-    return [
-      `LANGCHAIN_TRACING_V2=${enabled}`,
-      `LANGCHAIN_ENDPOINT=https://api.smith.langchain.com`,
-      `LANGCHAIN_API_KEY=${key}`,
-      `LANGCHAIN_PROJECT=${proj}`,
-    ].join('\n');
-  }
+  patch(field: string, value: any) { this.st.patch({ [field]: value } as any); }
+  save() { this.st.save(); }
 
-  save() {
-    this.saved = true;
-    setTimeout(() => this.saved = false, 2500);
-  }
+  isEditing(field: string)     { return this.st.isEditing(field); }
+  startEditing(field: string)  { this.st.startEditing(field); }
+  cancelEditing(field: string) { this.st.cancelEditing(field); }
 }

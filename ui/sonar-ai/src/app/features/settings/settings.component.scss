@@ -408,3 +408,142 @@ select.input {
   margin-bottom: 14px;
   flex-shrink: 0;
 }
+
+// ── Model select highlight ────────────────────────────────────────────────
+.input--model {
+  border-color: var(--brand-ring);
+  background: var(--brand-muted);
+  font-weight: 500;
+
+  &:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-ring);
+  }
+}
+
+.field__live-tag {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(22,163,74,.1);
+  color: var(--status-success);
+  border: 1px solid rgba(22,163,74,.2);
+  margin-left: 6px;
+}
+
+// ── Save button states ────────────────────────────────────────────────────
+.save-btn--saving {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+// ── Warning / error banners ───────────────────────────────────────────────
+.warn-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(180,83,9,.07);
+  border: 1px solid rgba(180,83,9,.22);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--status-warning);
+  margin-bottom: 14px;
+  flex-shrink: 0;
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(220,38,38,.07);
+  border: 1px solid rgba(220,38,38,.22);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--status-danger);
+  margin-bottom: 14px;
+  flex-shrink: 0;
+
+  .dismiss {
+    margin-left: auto;
+    background: none;
+    border: none;
+    font-size: 12px;
+    color: currentColor;
+    cursor: pointer;
+    opacity: 0.6;
+    &:hover { opacity: 1; }
+  }
+}
+
+// ── Token field UI ────────────────────────────────────────────────────────
+
+// Masked "set" state
+.token-set {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid rgba(22,163,74,.25);
+  border-radius: 8px;
+  background: rgba(22,163,74,.05);
+
+  &__mask {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--status-success);
+    letter-spacing: 0.5px;
+  }
+
+  &__actions {
+    display: flex;
+    gap: 6px;
+  }
+}
+
+// Input + cancel side by side
+.token-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  .input { flex: 1; }
+}
+
+// Token action buttons
+.token-btn {
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s;
+  flex-shrink: 0;
+
+  &--change {
+    border: 1px solid rgba(22,163,74,.3);
+    background: rgba(22,163,74,.08);
+    color: var(--status-success);
+
+    &:hover {
+      background: rgba(22,163,74,.15);
+      border-color: rgba(22,163,74,.5);
+    }
+  }
+
+  &--cancel {
+    border: 1px solid var(--border-md);
+    background: var(--surface-0);
+    color: var(--text-secondary);
+
+    &:hover { background: var(--surface-2); }
+  }
+}
