@@ -326,3 +326,11 @@ sonar-ai/
 ---
 
 *SonarAI v0.2.0 — Iteration 2*
+
+gcloud auth login
+
+gloud auth application-default login
+
+ng serve
+
+uvicorn api:app --reload --port 8000
