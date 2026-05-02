@@ -539,3 +539,149 @@
   border: 1px solid rgba(220,38,38,.22);
   color: var(--status-danger);
 }
+
+// ── Delete button (per row) ───────────────────────────────────────────────
+.th-del { width: 40px; }
+
+.td-actions {
+  padding: 0 8px !important;
+  text-align: right;
+}
+
+.del-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s, border-color 0.12s;
+
+  &:hover {
+    background: rgba(220,38,38,.08);
+    border-color: rgba(220,38,38,.2);
+    color: var(--status-danger);
+  }
+}
+
+// Show delete btn on row hover
+.tbl__row:hover .del-btn { opacity: 1; }
+.tbl__row--deleting .del-btn { opacity: 1; color: var(--status-danger); }
+
+// Row tint when delete is pending
+.tbl__row--deleting td {
+  background: rgba(220,38,38,.04) !important;
+}
+
+// ── Inline delete confirmation row ────────────────────────────────────────
+.tbl__confirm-row td {
+  padding: 0 !important;
+  border-bottom: 1px solid rgba(220,38,38,.2) !important;
+  background: rgba(220,38,38,.03) !important;
+}
+
+.delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: var(--status-danger);
+
+  svg { flex-shrink: 0; }
+
+  strong { font-family: var(--font-mono); }
+
+  &__actions {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+  }
+
+  &__cancel {
+    padding: 5px 12px;
+    font-size: 12px;
+    font-family: var(--font-sans);
+    font-weight: 500;
+    border: 1px solid var(--border-md);
+    border-radius: 6px;
+    background: var(--surface-0);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.12s;
+
+    &:hover { background: var(--surface-2); }
+  }
+
+  &__ok {
+    padding: 5px 12px;
+    font-size: 12px;
+    font-family: var(--font-sans);
+    font-weight: 500;
+    border: none;
+    border-radius: 6px;
+    background: var(--status-danger);
+    color: #fff;
+    cursor: pointer;
+    transition: opacity 0.12s;
+
+    &:hover { opacity: 0.85; }
+  }
+}
+
+// ── Drawer danger zone ────────────────────────────────────────────────────
+.drawer__field--danger {
+  border-top: 1px solid rgba(220,38,38,.15) !important;
+  background: rgba(220,38,38,.02);
+}
+
+.drawer-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  border: 1px solid rgba(220,38,38,.3);
+  border-radius: 7px;
+  background: none;
+  color: var(--status-danger);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+
+  &:hover {
+    background: rgba(220,38,38,.08);
+    border-color: rgba(220,38,38,.5);
+  }
+}
+
+// ── Upload feedback ───────────────────────────────────────────────────────
+.upload-msg, .upload-err {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.upload-msg {
+  background: rgba(22,163,74,.07);
+  border: 1px solid rgba(22,163,74,.22);
+  color: var(--status-success);
+}
+
+.upload-err {
+  background: rgba(220,38,38,.07);
+  border: 1px solid rgba(220,38,38,.22);
+  color: var(--status-danger);
+}

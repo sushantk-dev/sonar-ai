@@ -20,8 +20,11 @@ const SEV_ORDER: Severity[] = ['BLOCKER','CRITICAL','MAJOR','MINOR','INFO'];
   styleUrl:    './issues.component.scss',
 })
 export class IssuesComponent {
-  svc         = inject(DataService);
+  svc            = inject(DataService);
   private apiSvc = inject(ApiService);
+
+  // Issues stored as a signal so computed() reacts to any change
+  private _issues = signal<SonarIssue[]>([...this.svc.issues]);
 
   uploading   = false;
   uploadMsg   = '';
@@ -30,6 +33,8 @@ export class IssuesComponent {
   search    = '';
   sevFilter = 'ALL';
   outFilter = 'ALL';
+
+  deleteConfirmKey: string | null = null;
 
   private _page  = signal(0);
   readonly PAGE_SIZE = 10;
@@ -49,7 +54,7 @@ export class IssuesComponent {
 
   filtered = computed(() => {
     const q = this.search.toLowerCase();
-    return this.svc.issues
+    return this._issues()
       .filter(i => {
         if (this.sevFilter !== 'ALL' && i.severity !== this.sevFilter) return false;
         if (this.outFilter !== 'ALL' && (i.outcome ?? 'pending') !== this.outFilter) return false;
@@ -61,6 +66,7 @@ export class IssuesComponent {
       .sort((a, b) => SEV_ORDER.indexOf(a.severity) - SEV_ORDER.indexOf(b.severity));
   });
 
+  totalIssues = computed(() => this._issues().length);
   totalPages  = computed(() => Math.ceil(this.filtered().length / this.PAGE_SIZE) || 1);
   currentPage = computed(() => Math.min(this._page(), Math.max(0, this.totalPages() - 1)));
 
@@ -74,9 +80,27 @@ export class IssuesComponent {
   goPage(n: number) { this._page.set(n); }
 
   openDrawer(issue: SonarIssue) {
+    if (this.deleteConfirmKey) { this.deleteConfirmKey = null; return; }
     this.drawer = this.drawer?.key === issue.key ? null : issue;
   }
   closeDrawer() { this.drawer = null; }
+
+  requestDelete(event: Event, key: string) {
+    event.stopPropagation();
+    this.deleteConfirmKey = this.deleteConfirmKey === key ? null : key;
+  }
+
+  confirmDelete(event: Event, key: string) {
+    event.stopPropagation();
+    this._issues.update(list => list.filter(i => i.key !== key));
+    this.deleteConfirmKey = null;
+    if (this.drawer?.key === key) this.drawer = null;
+  }
+
+  cancelDelete(event: Event) {
+    event.stopPropagation();
+    this.deleteConfirmKey = null;
+  }
 
   pagerPages(): number[] {
     return Array.from({ length: Math.min(this.totalPages(), 7) }, (_, i) => i);
@@ -95,27 +119,57 @@ export class IssuesComponent {
       next: (res) => {
         this.uploading = false;
         this.uploadMsg = `Loaded ${res.issue_count} issues from ${file.name}`;
-        // Reload issues from API
-        this.apiSvc.getIssues().subscribe(data => {
-          // Patch local data service issues with real data
-          (this.svc as any).issues = data.issues.map((i: any) => ({
-            key:       i.key,
-            ruleKey:   i.rule_key,
-            severity:  i.severity,
-            component: i.component,
-            line:      i.line,
-            message:   i.message,
-            effort:    i.effort,
-            status:    i.status,
-            outcome:   'pending' as const,
-          }));
+        this.apiSvc.getIssues().subscribe({
+          next: (data) => {
+            const mapped: SonarIssue[] = data.issues.map((i: any) => ({
+              key:       i.key,
+              ruleKey:   i.rule_key,
+              severity:  i.severity as Severity,
+              component: i.component,
+              line:      i.line,
+              message:   i.message,
+              effort:    i.effort,
+              status:    i.status,
+              outcome:   'pending' as const,
+            }));
+            this._issues.set(mapped);
+            this._page.set(0);
+          },
+          error: () => this._parseFileLocally(file),
         });
       },
-      error: (err: Error) => {
-        this.uploading   = false;
-        this.uploadError = err.message;
+      error: () => {
+        this.uploading = false;
+        this._parseFileLocally(file);
       },
     });
-    input.value = ''; // reset so same file can be re-uploaded
+    input.value = '';
+  }
+
+  private _parseFileLocally(file: File) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const json = JSON.parse(e.target?.result as string);
+        const raw: any[] = Array.isArray(json) ? json : (json.issues ?? []);
+        const mapped: SonarIssue[] = raw.map((i: any) => ({
+          key:       i.key       ?? i.id       ?? crypto.randomUUID(),
+          ruleKey:   i.rule      ?? i.ruleKey  ?? i.rule_key ?? '',
+          severity:  (i.severity ?? 'INFO') as Severity,
+          component: i.component ?? i.file     ?? '',
+          line:      i.line      ?? i.textRange?.startLine ?? 0,
+          message:   i.message   ?? i.msg      ?? '',
+          effort:    i.effort    ?? i.remFn    ?? '',
+          status:    i.status    ?? 'OPEN',
+          outcome:   'pending' as const,
+        }));
+        this._issues.set(mapped);
+        this._page.set(0);
+        this.uploadMsg = `Loaded ${mapped.length} issues from ${file.name} (local parse)`;
+      } catch {
+        this.uploadError = `Could not parse ${file.name} — make sure it is valid JSON`;
+      }
+    };
+    reader.readAsText(file);
   }
 }
