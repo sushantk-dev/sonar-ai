@@ -23,20 +23,25 @@ export class IssuesComponent {
   svc            = inject(DataService);
   private apiSvc = inject(ApiService);
 
-  // Issues stored as a signal so computed() reacts to any change
-  private _issues = signal<SonarIssue[]>([...this.svc.issues]);
+  // ── ALL reactive state as signals so computed() tracks them ───────────────
+  private _issues    = signal<SonarIssue[]>([...this.svc.issues]);
+  private _search    = signal('');
+  private _sevFilter = signal('ALL');
+  private _outFilter = signal('ALL');
+  private _page      = signal(0);
 
-  uploading   = false;
-  uploadMsg   = '';
-  uploadError = '';
+  // Expose for template two-way binding
+  get search()    { return this._search(); }
+  set search(v: string) { this._search.set(v); this._page.set(0); }
 
-  search    = '';
-  sevFilter = 'ALL';
-  outFilter = 'ALL';
+  get sevFilter() { return this._sevFilter(); }
+  get outFilter() { return this._outFilter(); }
 
+  uploading        = false;
+  uploadMsg        = '';
+  uploadError      = '';
   deleteConfirmKey: string | null = null;
 
-  private _page  = signal(0);
   readonly PAGE_SIZE = 10;
 
   drawer: SonarIssue | null = null;
@@ -52,12 +57,16 @@ export class IssuesComponent {
     { label: 'Pending',   value: 'pending'   },
   ];
 
+  // ── computed() reads signals — reruns automatically when any changes ───────
   filtered = computed(() => {
-    const q = this.search.toLowerCase();
+    const q   = this._search().toLowerCase();
+    const sev = this._sevFilter();
+    const out = this._outFilter();
+
     return this._issues()
       .filter(i => {
-        if (this.sevFilter !== 'ALL' && i.severity !== this.sevFilter) return false;
-        if (this.outFilter !== 'ALL' && (i.outcome ?? 'pending') !== this.outFilter) return false;
+        if (sev !== 'ALL' && i.severity !== sev) return false;
+        if (out !== 'ALL' && (i.outcome ?? 'pending') !== out) return false;
         if (q && !i.ruleKey.toLowerCase().includes(q) &&
                  !i.component.toLowerCase().includes(q) &&
                  !i.message.toLowerCase().includes(q)) return false;
@@ -75,16 +84,19 @@ export class IssuesComponent {
     return this.filtered().slice(start, start + this.PAGE_SIZE);
   });
 
-  setSev(s: string) { this.sevFilter = s; this._page.set(0); }
-  setOut(o: string) { this.outFilter = o; this._page.set(0); }
+  // ── Filter setters — update signals, reset to page 0 ─────────────────────
+  setSev(s: string) { this._sevFilter.set(s); this._page.set(0); }
+  setOut(o: string) { this._outFilter.set(o); this._page.set(0); }
   goPage(n: number) { this._page.set(n); }
 
+  // ── Drawer ────────────────────────────────────────────────────────────────
   openDrawer(issue: SonarIssue) {
     if (this.deleteConfirmKey) { this.deleteConfirmKey = null; return; }
     this.drawer = this.drawer?.key === issue.key ? null : issue;
   }
   closeDrawer() { this.drawer = null; }
 
+  // ── Delete ────────────────────────────────────────────────────────────────
   requestDelete(event: Event, key: string) {
     event.stopPropagation();
     this.deleteConfirmKey = this.deleteConfirmKey === key ? null : key;
@@ -106,6 +118,7 @@ export class IssuesComponent {
     return Array.from({ length: Math.min(this.totalPages(), 7) }, (_, i) => i);
   }
 
+  // ── Import ────────────────────────────────────────────────────────────────
   onImport(event: Event) {
     const input = event.target as HTMLInputElement;
     const file  = input.files?.[0];
