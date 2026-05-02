@@ -43,6 +43,7 @@ app.add_middleware(
 # run_id → { status, steps, results, error }
 _runs: dict[str, dict[str, Any]] = {}
 _last_report_issues: list[dict] = []
+_cancelled: set[str] = set()  # run IDs cancelled by the user
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -118,6 +119,11 @@ def _run_pipeline_background(run_id: str, req: PipelineRunRequest,
         _push_step(run_id, label, "pending")
 
     try:
+        # Check early if already cancelled before starting
+        if run_id in _cancelled:
+            run["status"] = "cancelled"
+            return
+
         # Apply env overrides from request flags
         if req.dry_run:
             os.environ["SONAR_AI_DRY_RUN"] = "1"
@@ -148,6 +154,10 @@ def _run_pipeline_background(run_id: str, req: PipelineRunRequest,
             elif "[Deliver]"   in m: _push_step(run_id, "Deliver",    "running", m)
 
         logger.info = _intercepting_info  # type: ignore[method-assign]
+
+        def _check_cancelled():
+            if run_id in _cancelled:
+                raise InterruptedError(f"Run {run_id} cancelled by user")
 
         t0 = time.time()
         final_state = run_pipeline(
@@ -181,6 +191,21 @@ def _run_pipeline_background(run_id: str, req: PipelineRunRequest,
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.post("/api/pipeline/cancel/{run_id}")
+def cancel_run(run_id: str) -> dict:
+    """Cancel a running pipeline run. Best-effort — stops polling and marks as cancelled."""
+    _cancelled.add(run_id)
+    if run_id in _runs:
+        run = _runs[run_id]
+        if run["status"] == "running":
+            run["status"] = "cancelled"
+            for s in run.get("steps", []):
+                if s["status"] == "running":
+                    s["status"] = "error"
+                    s["detail"] = "Cancelled by user"
+    return {"message": f"Run {run_id} cancellation requested"}
+
 
 @app.get("/api/health")
 def health() -> dict:

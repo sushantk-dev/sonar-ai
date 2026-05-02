@@ -125,6 +125,10 @@ export class ApiService {
     );
   }
 
+  cancelRun(runId: string): Observable<{ message: string }> {
+    return this.http.post<any>(`${this.base}/api/pipeline/cancel/${runId}`, {});
+  }
+
   listRuns(): Observable<{ runs: any[] }> {
     return this.http.get<any>(`${this.base}/api/pipeline/runs`);
   }

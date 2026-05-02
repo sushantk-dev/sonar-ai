@@ -11,6 +11,12 @@
         <span class="api-badge__dot"></span>
         {{ error() ? 'API offline' : 'API connected' }}
       </span>
+      <button class="stop-btn" *ngIf="canCancel" (click)="cancelRun()">
+        <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+          <rect x="2" y="2" width="7" height="7" rx="1" fill="currentColor"/>
+        </svg>
+        Stop Run
+      </button>
       <button class="run-btn" (click)="showForm.set(!showForm())" [disabled]="running()">
         <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
           <path d="M1.5 1L9.5 5.5L1.5 10V1Z" fill="currentColor"/>
@@ -78,7 +84,7 @@
       <circle cx="7" cy="9.5" r=".6" fill="currentColor"/>
     </svg>
     {{ error() }}
-    <button class="error-banner__close" (click)="error.set(null)">✕</button>
+    <button class="error-banner__close" (click)="state.error.set(null)">✕</button>
   </div>
 
   <!-- ── Layout ── -->
