@@ -894,3 +894,31 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+// ── Run card delete button ────────────────────────────────────────────────
+.run-card__del {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: all 0.12s;
+
+  &:hover {
+    background: rgba(220,38,38,.08);
+    border-color: rgba(220,38,38,.2);
+    color: var(--status-danger);
+    opacity: 1 !important;
+  }
+}
+
+.run-card:hover .run-card__del { opacity: 0.5; }
+.run-card--active .run-card__del { opacity: 0.5; }

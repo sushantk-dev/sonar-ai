@@ -99,16 +99,29 @@
            (click)="select(run)">
 
         <div class="run-card__top">
-          <span class="pill {{ $any(run.severity) | sevClass }}">{{ run.severity }}</span>
-          <span class="run-card__rule">{{ run.ruleKey }}</span>
+          <span class="pill {{ $any(run.severity) | sevClass }}"
+                *ngIf="run.status !== 'running' || run.ruleKey !== '—'">
+            {{ run.severity }}
+          </span>
+          <span class="run-card__rule">
+            {{ run.status === 'running' && run.ruleKey === '—' ? 'Pipeline running…' : run.ruleKey }}
+          </span>
           <span *ngIf="run.live && run.status === 'running'" class="live-badge">LIVE</span>
           <span *ngIf="run.status === 'cancelled'" class="cancelled-badge">CANCELLED</span>
-          <span *ngIf="run.outcome && run.status !== 'cancelled'"
+          <span *ngIf="run.outcome && run.status !== 'cancelled' && run.status !== 'running'"
                 class="badge {{ $any(run.outcome) | outcomeClass }}">
             {{ $any(run.outcome) | outcomeLabel }}
           </span>
-          <span *ngIf="!run.outcome && run.live && run.status === 'running'"
-                class="badge pending">Running…</span>
+          <!-- Delete button — only shown for finished runs -->
+          <button *ngIf="run.status !== 'running'"
+                  class="run-card__del"
+                  title="Remove"
+                  (click)="deleteRun(run.id); $event.stopPropagation()">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+              <path d="M1 1L10 10M10 1L1 10" stroke="currentColor" stroke-width="1.5"
+                    stroke-linecap="round"/>
+            </svg>
+          </button>
         </div>
 
         <div class="run-card__comp">{{ run.component || '—' }}</div>

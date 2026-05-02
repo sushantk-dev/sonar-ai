@@ -62,6 +62,7 @@ export class PipelineComponent {
   }
 
   cancelRun() { this.state.cancelRun(); }
+  deleteRun(id: string) { this.state.deleteRun(id); }
 
   // ── Restart — re-run with the exact same inputs ───────────────────────────
   restartRun(req: RunRequest) {

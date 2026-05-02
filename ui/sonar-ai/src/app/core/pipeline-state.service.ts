@@ -28,8 +28,8 @@ export interface UiRun {
   ragHits?:    number;
   retries?:    number;
   live:        boolean;
-  status?:     'queued' | 'running' | 'done' | 'error' | 'cancelled';
-  request?:    RunRequest;   // ← the exact input that was passed
+  status?:     'queued' | 'running' | 'done' | 'error' | 'cancelled' | 'empty';
+  request?:    RunRequest;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -75,7 +75,7 @@ export class PipelineStateService {
   confClass(c: ConfLabel | string | undefined) { return (c ?? '').toLowerCase(); }
 
   outcomeIcon(o?: string) {
-    return { pr_opened:'✓', draft_pr:'~', escalated:'!', error:'✕', cancelled:'◼' }[o ?? ''] ?? '?';
+    return { pr_opened:'✓', draft_pr:'~', escalated:'!', error:'✕', cancelled:'◼', empty:'—' }[o ?? ''] ?? '?';
   }
 
   outcomeTitle(o?: string) {
@@ -85,6 +85,7 @@ export class PipelineStateService {
       escalated: 'Escalated — manual fix needed',
       error:     'Pipeline error',
       cancelled: 'Run cancelled',
+      empty:     'No issues found in report',
     }[o ?? ''] ?? o ?? '';
   }
 
@@ -94,6 +95,7 @@ export class PipelineStateService {
     return 'LOW';
   }
 
+  // ── Start ─────────────────────────────────────────────────────────────────
   startRun(req: RunRequest) {
     if (this.running()) return;
     this.running.set(true);
@@ -113,14 +115,14 @@ export class PipelineStateService {
 
     const liveRun: UiRun = {
       id:        runId,
-      ruleKey:   'Starting…',
-      severity:  'MAJOR',
+      ruleKey:   '—',           // blank until first result comes in
+      severity:  'INFO',
       component: '',
       steps: ['Ingest','Load Repo','RAG Fetch','Planner','Generator','Critic','Validate','Deliver']
         .map(label => ({ label, status: 'pending' as const, detail: '', ms: 0 })),
       live:    true,
       status:  'running',
-      request: req,   // ← store the input immediately
+      request: req,
     };
 
     this.runs.update(rs => [liveRun, ...rs]);
@@ -139,18 +141,23 @@ export class PipelineStateService {
   private _applyStatus(runId: string, status: RunStatus) {
     this.runs.update(rs => rs.map(r => {
       if (r.id !== runId) return r;
+
       const first = status.results?.[0];
+
+      // Handle no-issues case: pipeline finished but nothing was processed
+      const noResults = (status.status === 'done') && (!status.results || status.results.length === 0);
+
       return {
         ...r,
-        steps:      status.steps ?? r.steps,
-        outcome:    first?.outcome,
-        confidence: first ? this.confLabel(first.confidence) : undefined,
-        prUrl:      first?.pr_url ?? undefined,
-        status:     status.status,
-        ruleKey:    first?.rule_key  ?? r.ruleKey,
-        severity:   first?.severity  ?? r.severity,
-        component:  first?.file_path ?? r.component,
-        // request preserved from the original liveRun — never overwritten
+        steps:      status.steps?.length ? status.steps : r.steps,
+        outcome:    noResults ? 'empty' : (first?.outcome ?? r.outcome),
+        confidence: first ? this.confLabel(first.confidence) : r.confidence,
+        prUrl:      first?.pr_url ?? r.prUrl,
+        status:     noResults ? 'empty' as any : status.status,
+        // Only overwrite header fields if we have a real result
+        ruleKey:    first?.rule_key  ? first.rule_key  : r.ruleKey,
+        severity:   first?.severity  ? first.severity  : r.severity,
+        component:  first?.file_path ? first.file_path : r.component,
       };
     }));
 
@@ -162,9 +169,19 @@ export class PipelineStateService {
     if (status.status === 'done' || status.status === 'error') {
       this.running.set(false);
       this._activeRunId = null;
+
       if (status.status === 'error' && status.error) {
         this.error.set(status.error);
       }
+
+      // No issues in the report — auto-remove placeholder after 4 s
+      const noResults = !status.results || status.results.length === 0;
+      if (noResults && status.status === 'done') {
+        this.error.set('No issues found in the report — nothing to process.');
+        setTimeout(() => this.deleteRun(runId), 4000);
+        return;
+      }
+
       if ((status.results?.length ?? 0) > 1) {
         this._explodeResults(runId, status);
       }
@@ -172,7 +189,6 @@ export class PipelineStateService {
   }
 
   private _explodeResults(runId: string, status: RunStatus) {
-    // Preserve the request from the parent run
     const parentReq = this.runs().find(r => r.id === runId)?.request;
 
     const newCards: UiRun[] = status.results.map((r, i) => ({
@@ -193,6 +209,20 @@ export class PipelineStateService {
     if (newCards[0]) this.selected.set(newCards[0]);
   }
 
+  // ── Delete a finished run card ────────────────────────────────────────────
+  deleteRun(id: string) {
+    // Don't delete actively running run
+    if (id === this._activeRunId) return;
+
+    this.runs.update(rs => rs.filter(r => r.id !== id));
+
+    // Clear selected if it was this run
+    if (this.selected()?.id === id) {
+      this.selected.set(this.runs()[0] ?? null);
+    }
+  }
+
+  // ── Cancel ────────────────────────────────────────────────────────────────
   cancelRun() {
     const runId = this._activeRunId;
     if (!runId) return;
