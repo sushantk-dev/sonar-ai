@@ -171,24 +171,35 @@ export class SettingsStateService {
       chroma_persist_dir:          c.chromaPath,
       embedding_model:             c.embeddingModel,
       rag_top_k:                   c.ragTopK,
-      sonar_host_url:              c.sonarOrg       || undefined,
     };
 
-    // Only include token fields if user was actively editing them
+    // Include token fields if:
+    //   - user was actively editing (Change button flow), OR
+    //   - token field has a value typed directly (first-time entry flow, no editingTokens set)
     const editing = this.editingTokens();
-    if (editing.has('githubToken'))  payload['github_token']     = c.githubToken;
-    if (editing.has('sonarToken'))   payload['sonar_token']      = c.sonarToken;
+
+    if (editing.has('githubToken') || (!this.tokenStatus().githubToken && c.githubToken)) {
+      payload['github_token'] = c.githubToken;
+    }
+    if (editing.has('sonarToken') || (!this.tokenStatus().sonarToken && c.sonarToken)) {
+      payload['sonar_token'] = c.sonarToken;
+    }
+
+    // Always send sonar_host_url when it has a value
+    if (c.sonarOrg) {
+      payload['sonar_host_url'] = c.sonarOrg;
+    }
 
     this.apiSvc.saveConfig(payload).subscribe({
       next: () => {
         this.saving.set(false);
         this.saved.set(true);
 
-        // Update tokenStatus based on what was just saved
+        // Update tokenStatus based on what was saved
         this.tokenStatus.update(ts => ({
           ...ts,
-          ...(editing.has('githubToken')  ? { githubToken:  !!c.githubToken  } : {}),
-          ...(editing.has('sonarToken')   ? { sonarToken:   !!c.sonarToken   } : {}),
+          ...(payload['github_token'] !== undefined ? { githubToken: !!c.githubToken } : {}),
+          ...(payload['sonar_token']  !== undefined ? { sonarToken:  !!c.sonarToken  } : {}),
         }));
 
         // Clear editing state and token values after save
