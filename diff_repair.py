@@ -540,6 +540,9 @@ def _apply_intent_directly(patch: str, file_lines: list[str], file_path: str) ->
     if not diff:
         return None
     return "\n".join(diff) + "\n"
+
+
+def _parse_hunks(
     patch: str,
 ) -> list[tuple[list[str], list[str], list[str], list[str]]]:
     """
