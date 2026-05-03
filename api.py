@@ -166,7 +166,7 @@ def _pipeline_worker(
             elif "[Planner]"   in m: _push_detail("Planner",    m, "[Planner]")
             elif "[Generator]" in m: _push_detail("Generator",  m, "[Generator]")
             elif "[Critic]"    in m: _push_detail("Critic",     m, "[Critic]")
-            elif "[Validate]"  in m: _push_detail("Validate",   m, "[Validate]")
+            elif "[Validator]" in m: _push_detail("Validate",   m, "[Validator]")
             elif "[Deliver]"   in m: _push_detail("Deliver",    m, "[Deliver]")
 
         _log.info = _intercepting_info  # type: ignore[method-assign]
