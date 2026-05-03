@@ -8,17 +8,56 @@
         {{ st.filtered().length }} of {{ st.totalIssues() }} issues — sorted BLOCKER → INFO
       </p>
     </div>
-    <label class="import-btn" [class.import-btn--loading]="st.uploading()">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-        <path d="M6.5 1V8M6.5 1L4 3.5M6.5 1L9 3.5" stroke="currentColor" stroke-width="1.5"
-              stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M1 9.5V11C1 11.6 1.4 12 2 12H11C11.6 12 12 11.6 12 11V9.5"
-              stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-      </svg>
-      {{ st.uploading() ? 'Importing…' : 'Import Report' }}
-      <input type="file" accept=".json" (change)="onImport($event)"
-             [disabled]="st.uploading()" style="display:none">
-    </label>
+    <div class="header-actions">
+      <!-- Export Report -->
+      <button class="export-btn" [disabled]="st.exportingReport() || st.totalIssues() === 0"
+              (click)="exportReport()" title="Export structured JSON report">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+          <path d="M6.5 9V2M6.5 9L4 6.5M6.5 9L9 6.5" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M1 9.5V11C1 11.6 1.4 12 2 12H11C11.6 12 12 11.6 12 11V9.5"
+                stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        {{ st.exportingReport() ? 'Exporting…' : 'Export Report' }}
+      </button>
+      <!-- Import Report -->
+      <label class="import-btn" [class.import-btn--loading]="st.uploading()">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+          <path d="M6.5 1V8M6.5 1L4 3.5M6.5 1L9 3.5" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M1 9.5V11C1 11.6 1.4 12 2 12H11C11.6 12 12 11.6 12 11V9.5"
+                stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        {{ st.uploading() ? 'Importing…' : 'Import Report' }}
+        <input type="file" accept=".json" (change)="onImport($event)"
+               [disabled]="st.uploading()" style="display:none">
+      </label>
+    </div>
+  </div>
+
+  <!-- ── Live SonarQube Fetch Panel ── -->
+  <div class="sonar-fetch-panel">
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" class="sonar-fetch-panel__icon">
+      <circle cx="7.5" cy="7.5" r="6.5" stroke="currentColor" stroke-width="1.3"/>
+      <path d="M4.5 9.5C5.2 10.5 6.3 11 7.5 11C9.4 11 11 9.4 11 7.5C11 5.6 9.4 4 7.5 4C6 4 4.7 4.9 4.2 6.2"
+            stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+      <path d="M3 7L4.5 8.5L6 6" stroke="currentColor" stroke-width="1.2"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span class="sonar-fetch-panel__label">Live Fetch from SonarQube</span>
+    <input
+      class="sonar-fetch-panel__input"
+      type="text"
+      placeholder="com.equifax.usis.batch.falcon:helloworld"
+      [(ngModel)]="sonarComponentKey"
+      [disabled]="st.fetching()"
+      (keydown.enter)="fetchFromSonar()">
+    <button class="sonar-fetch-panel__btn"
+            [disabled]="st.fetching() || !sonarComponentKey.trim()"
+            (click)="fetchFromSonar()">
+      <span *ngIf="st.fetching()" class="spinner"></span>
+      {{ st.fetching() ? 'Fetching…' : 'Fetch Issues' }}
+    </button>
   </div>
 
   <!-- ── Upload feedback ── -->

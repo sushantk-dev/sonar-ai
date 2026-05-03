@@ -25,6 +25,11 @@ export class IssuesStateService {
   uploadError      = signal('');
   deleteConfirmKey = signal<string | null>(null);
 
+  // Live SonarQube fetch state
+  fetching         = signal(false);
+  fetchComponent   = signal('');
+  exportingReport  = signal(false);
+
   readonly PAGE_SIZE = 10;
 
   constructor() {
@@ -187,4 +192,65 @@ export class IssuesStateService {
     };
     reader.readAsText(file);
   }
+
+  // ── Live SonarQube Fetch ──────────────────────────────────────────────────
+  fetchFromSonar(componentKey: string, severities = 'BLOCKER,CRITICAL,MAJOR,MINOR,INFO') {
+    if (!componentKey.trim()) {
+      this.uploadError.set('Please enter a component key to fetch from SonarQube.');
+      return;
+    }
+    this.fetching.set(true);
+    this.uploadMsg.set('');
+    this.uploadError.set('');
+
+    this.apiSvc.fetchSonarIssues({
+      component_keys: componentKey.trim(),
+      severities,
+      resolved: false,
+      ps: 500,
+    }).subscribe({
+      next: (res) => {
+        this.apiSvc.getIssues().subscribe({
+          next: (data) => {
+            this._issues.set(this._mapApiIssues(data.issues));
+            this._page.set(0);
+            this.fetching.set(false);
+            this.uploadMsg.set(
+              `Fetched ${res.issue_count} issues from SonarQube (component: ${res.component})`
+            );
+          },
+          error: () => { this.fetching.set(false); },
+        });
+      },
+      error: (err) => {
+        this.fetching.set(false);
+        const detail = err?.error?.detail ?? err?.message ?? 'SonarQube fetch failed';
+        this.uploadError.set(detail);
+      },
+    });
+  }
+
+  // ── Export Structured Report ──────────────────────────────────────────────
+  exportReport() {
+    this.exportingReport.set(true);
+    this.apiSvc.getSonarReport().subscribe({
+      next: (report) => {
+        this.exportingReport.set(false);
+        const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        const ts   = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.href     = url;
+        a.download = `sonar-report-${ts}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        this.uploadMsg.set(`Report exported: sonar-report-${ts}.json`);
+      },
+      error: () => {
+        this.exportingReport.set(false);
+        this.uploadError.set('Export failed — no issues loaded.');
+      },
+    });
+  }
+
 }

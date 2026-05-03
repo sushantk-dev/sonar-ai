@@ -65,4 +65,16 @@ export class IssuesComponent {
     this.st.onImport(file);
     input.value = '';
   }
+
+  // Live SonarQube fetch
+  sonarComponentKey = '';
+
+  fetchFromSonar() {
+    this.st.fetchFromSonar(this.sonarComponentKey);
+  }
+
+  // Export structured report
+  exportReport() {
+    this.st.exportReport();
+  }
 }
