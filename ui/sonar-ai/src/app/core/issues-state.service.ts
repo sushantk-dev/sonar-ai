@@ -1,7 +1,7 @@
 // src/app/core/issues-state.service.ts
 import { Injectable, inject, signal, computed } from '@angular/core';
 import { DataService } from './data.service';
-import { ApiService } from './api.service';
+import { ApiService, SonarFetchResponse, SonarReport } from './api.service';
 import { SonarIssue, Severity } from './models';
 
 const SEV_ORDER: Severity[] = ['BLOCKER','CRITICAL','MAJOR','MINOR','INFO'];
@@ -148,7 +148,7 @@ export class IssuesStateService {
     this.uploadError.set('');
 
     this.apiSvc.uploadReport(file).subscribe({
-      next: (res) => {
+      next: (res: { message: string; issue_count: number; path: string }) => {
         this.uploading.set(false);
         this.uploadMsg.set(`Loaded ${res.issue_count} issues from ${file.name}`);
         this.apiSvc.getIssues().subscribe({
@@ -209,7 +209,7 @@ export class IssuesStateService {
       resolved: false,
       ps: 500,
     }).subscribe({
-      next: (res) => {
+      next: (res: SonarFetchResponse) => {
         this.apiSvc.getIssues().subscribe({
           next: (data) => {
             this._issues.set(this._mapApiIssues(data.issues));
@@ -222,7 +222,7 @@ export class IssuesStateService {
           error: () => { this.fetching.set(false); },
         });
       },
-      error: (err) => {
+      error: (err: any) => {
         this.fetching.set(false);
         const detail = err?.error?.detail ?? err?.message ?? 'SonarQube fetch failed';
         this.uploadError.set(detail);
@@ -234,7 +234,7 @@ export class IssuesStateService {
   exportReport() {
     this.exportingReport.set(true);
     this.apiSvc.getSonarReport().subscribe({
-      next: (report) => {
+      next: (report: SonarReport) => {
         this.exportingReport.set(false);
         const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
         const url  = URL.createObjectURL(blob);
