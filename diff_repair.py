@@ -367,11 +367,12 @@ def _find_sequence(needles: list[str], haystack: list[str]) -> Optional[int]:
             return i + 1
 
     # Pass 3 — fuzzy substring (each needle stripped must be contained in
-    # the corresponding haystack line stripped, or vice-versa)
+    # the corresponding haystack line stripped, or vice-versa).
+    # Blank needles are wildcards — match any haystack line.
     def _fuzzy_line_match(hay: str, needle: str) -> bool:
         h, nd = hay.strip(), needle.strip()
         if not nd:
-            return not h  # both blank
+            return True  # blank needle = wildcard
         return nd in h or h in nd
 
     for i in range(len(haystack) - n + 1):
@@ -492,20 +493,18 @@ def _apply_intent_directly(patch: str, file_lines: list[str], file_path: str) ->
 
     for removed, added, context_before, context_after in hunks:
         if removed:
-            pos = _find_sequence(removed, [l.strip() for l in [x.rstrip() for x in new_lines[offset:]]])
+            # _find_sequence now has 3-pass fuzzy matching — pass the current
+            # state of new_lines (stripped of line endings) as the haystack.
+            haystack = [l.rstrip("\r\n") for l in new_lines]
+            pos = _find_sequence(removed, haystack)
             if pos is None:
-                # Try strip-based search on full file
-                stripped_new = [l.strip() for l in new_lines]
-                stripped_removed = [l.strip() for l in removed]
-                pos = _find_sequence(stripped_removed, stripped_new)
-                if pos is None:
-                    logger.debug(f"[DiffRepair-C] Cannot locate: {removed[:1]}")
-                    continue
-                idx = pos - 1
-            else:
-                idx = pos - 1 + offset
+                logger.debug(f"[DiffRepair-C] Cannot locate: {removed[:1]}")
+                continue
+            idx = pos - 1  # convert 1-based to 0-based
 
-            new_lines[idx : idx + len(removed)] = [a if a.endswith("\n") else a + "\n" for a in added]
+            new_lines[idx : idx + len(removed)] = [
+                (a if a.endswith("\n") else a + "\n") for a in added
+            ]
             offset += len(added) - len(removed)
 
         elif added:
