@@ -70,6 +70,18 @@ def repair_diff(patch: str, file_path: str) -> str:
     except Exception as exc:
         logger.debug(f"[DiffRepair] Strategy B failed: {exc}")
 
+    # C — nuclear: directly apply the intended changes by writing the file,
+    #     bypassing git apply entirely. Returns a synthetic diff so the
+    #     caller's git-apply path still has something, but _apply_diff_python
+    #     will have already written the result.
+    try:
+        applied = _apply_intent_directly(patch, file_lines, file_path)
+        if applied:
+            logger.info("[DiffRepair] Strategy C: intent applied directly to file")
+            return applied
+    except Exception as exc:
+        logger.debug(f"[DiffRepair] Strategy C failed: {exc}")
+
     logger.warning("[DiffRepair] All strategies failed — using original patch")
     return patch
 
@@ -111,6 +123,9 @@ def _strip_markdown_fences(patch: str) -> str:
     """
     if not patch:
         return patch
+
+    # Normalise real CRLF bytes (Windows file / clipboard artefact)
+    patch = patch.replace("\r\n", "\n").replace("\r", "\n")
 
     # Unescape literal \\n / \\r\\n sequences (LLM JSON artefact)
     patch = patch.replace("\\r\\n", "\n").replace("\\n", "\n")
@@ -324,13 +339,45 @@ def _fix_offsets(patch: str, file_lines: list[str]) -> str:
 
 
 def _find_sequence(needles: list[str], haystack: list[str]) -> Optional[int]:
-    """1-based index of the first contiguous match of needles in haystack."""
+    """
+    1-based index of the first contiguous match of needles in haystack.
+
+    Matching order (most → least strict):
+      1. Exact match after rstrip()
+      2. Strip-based match (tolerates indentation drift)
+      3. Fuzzy match: each needle's stripped content is a substring of
+         the corresponding haystack line's stripped content — catches
+         cases where the LLM truncated a long comment or added/removed
+         trailing punctuation.
+    """
     if not needles:
         return None
     n = len(needles)
+
+    # Pass 1 — exact
     for i in range(len(haystack) - n + 1):
         if haystack[i : i + n] == needles:
             return i + 1
+
+    # Pass 2 — strip-based
+    stripped_needles  = [l.strip() for l in needles]
+    stripped_haystack = [l.strip() for l in haystack]
+    for i in range(len(stripped_haystack) - n + 1):
+        if stripped_haystack[i : i + n] == stripped_needles:
+            return i + 1
+
+    # Pass 3 — fuzzy substring (each needle stripped must be contained in
+    # the corresponding haystack line stripped, or vice-versa)
+    def _fuzzy_line_match(hay: str, needle: str) -> bool:
+        h, nd = hay.strip(), needle.strip()
+        if not nd:
+            return not h  # both blank
+        return nd in h or h in nd
+
+    for i in range(len(haystack) - n + 1):
+        if all(_fuzzy_line_match(haystack[i + j], needles[j]) for j in range(n)):
+            return i + 1
+
     return None
 
 
@@ -418,7 +465,81 @@ def _find_insertion_point(
     return None
 
 
-def _parse_hunks(
+
+
+# ── Strategy C: direct file write (nuclear fallback) ─────────────────────────
+
+def _apply_intent_directly(patch: str, file_lines: list[str], file_path: str) -> Optional[str]:
+    """
+    Last-resort fallback: apply the +/- intent directly to the file on disk,
+    then produce a fresh unified diff from the result.
+
+    Unlike Strategy B, this writes the file immediately rather than
+    returning a repaired patch string for git apply. The returned diff
+    is a clean synthetic diff that _apply_diff_python will be able to
+    re-apply cleanly (it becomes a no-op since the file is already updated).
+
+    Works even when @@ offsets are completely wrong, because it only
+    looks at removed/added lines, not line numbers.
+    """
+    hunks = _parse_hunks(patch)
+    if not hunks:
+        return None
+
+    file_stripped = [l.rstrip() for l in file_lines]
+    new_lines = list(file_lines)
+    offset = 0
+
+    for removed, added, context_before, context_after in hunks:
+        if removed:
+            pos = _find_sequence(removed, [l.strip() for l in [x.rstrip() for x in new_lines[offset:]]])
+            if pos is None:
+                # Try strip-based search on full file
+                stripped_new = [l.strip() for l in new_lines]
+                stripped_removed = [l.strip() for l in removed]
+                pos = _find_sequence(stripped_removed, stripped_new)
+                if pos is None:
+                    logger.debug(f"[DiffRepair-C] Cannot locate: {removed[:1]}")
+                    continue
+                idx = pos - 1
+            else:
+                idx = pos - 1 + offset
+
+            new_lines[idx : idx + len(removed)] = [a if a.endswith("\n") else a + "\n" for a in added]
+            offset += len(added) - len(removed)
+
+        elif added:
+            insert_after = _find_insertion_point(context_before, context_after, file_stripped)
+            if insert_after is None:
+                continue
+            idx = insert_after + offset
+            new_lines[idx:idx] = [a if a.endswith("\n") else a + "\n" for a in added]
+            offset += len(added)
+
+    if new_lines == file_lines:
+        return None  # Nothing changed — don't claim success
+
+    # Write directly to disk
+    try:
+        target = Path(file_path)
+        target.write_text("".join(new_lines), encoding="utf-8")
+        logger.info(f"[DiffRepair-C] Wrote patched file directly: {target.name}")
+    except OSError as exc:
+        logger.warning(f"[DiffRepair-C] Could not write file: {exc}")
+        return None
+
+    # Return a clean synthetic diff so the caller has a valid patch string
+    rel_path = Path(file_path).name
+    diff = list(difflib.unified_diff(
+        [l.rstrip("\n") + "\n" for l in file_lines],
+        new_lines,
+        fromfile=f"a/{rel_path}",
+        tofile=f"b/{rel_path}",
+        lineterm="",
+    ))
+    if not diff:
+        return None
+    return "\n".join(diff) + "\n"
     patch: str,
 ) -> list[tuple[list[str], list[str], list[str], list[str]]]:
     """

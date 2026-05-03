@@ -161,11 +161,29 @@ def _apply_diff_python(patch_hunks: str, file_path: str = "") -> tuple[bool, str
 
     FUZZ = 10  # lines to search around the declared @@ start for fuzzy matching
 
-    def _lines_match(file_block: list[str], patch_block: list[str]) -> bool:
-        """Strip-based comparison: tolerates indentation drift from the LLM."""
+    def _lines_match(file_block: list[str], patch_block: list[str], fuzzy: bool = False) -> bool:
+        """
+        Compare file lines to patch lines.
+        - Default: strip()-based (tolerates indentation drift).
+        - fuzzy=True: each patch line's stripped content must be a substring of
+          the corresponding file line's stripped content, or vice-versa.
+          This handles LLM hallucinations where the removed line content differs
+          slightly from the actual file (different comment text, truncation, etc.).
+        """
         if len(file_block) != len(patch_block):
             return False
-        return all(f.strip() == p.strip() for f, p in zip(file_block, patch_block))
+        for f, p in zip(file_block, patch_block):
+            fs, ps = f.strip(), p.strip()
+            if fuzzy:
+                if not ps:
+                    if fs:
+                        return False
+                elif ps not in fs and fs not in ps:
+                    return False
+            else:
+                if fs != ps:
+                    return False
+        return True
 
     # ── 1. Resolve the target file ───────────────────────────────────────────
     target: Optional[Path] = None
@@ -292,6 +310,18 @@ def _apply_diff_python(patch_hunks: str, file_path: str = "") -> tuple[bool, str
             if match_idx is None:
                 for idx in range(len(file_lines) - n + 1):
                     if _lines_match(file_lines[idx : idx + n], removed):
+                        match_idx = idx
+                        break
+
+            # Pass 3: fuzzy substring scan — handles LLM hallucinated line content
+            # (e.g. slightly different comment text, truncated strings)
+            if match_idx is None:
+                for idx in range(len(file_lines) - n + 1):
+                    if _lines_match(file_lines[idx : idx + n], removed, fuzzy=True):
+                        logger.info(
+                            f"[Validator] Fuzzy match found at line {idx + 1} "
+                            f"for declared offset {old_start}"
+                        )
                         match_idx = idx
                         break
 
