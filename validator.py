@@ -313,17 +313,58 @@ def _apply_diff_python(patch_hunks: str, file_path: str = "") -> tuple[bool, str
                         match_idx = idx
                         break
 
-            # Pass 3: fuzzy substring scan — handles LLM hallucinated line content
-            # (e.g. slightly different comment text, truncated strings)
+            # Pass 3: anchor-fuzzy — pick the longest non-blank removed line as
+            # anchor, scan file for it, verify surrounding block.
+            # Prevents short tokens like <!-- from matching the wrong line.
             if match_idx is None:
-                for idx in range(len(file_lines) - n + 1):
-                    if _lines_match(file_lines[idx : idx + n], removed, fuzzy=True):
+                def _fuzz(f: str, p: str) -> bool:
+                    fs2, ps2 = f.strip(), p.strip()
+                    if not ps2:
+                        return True
+                    return ps2 in fs2 or fs2 in ps2
+
+                anchor_j = max(range(n), key=lambda j: len(removed[j].strip()))
+                anchor_p = removed[anchor_j].strip()
+                if anchor_p:
+                    for i in range(len(file_lines)):
+                        if not _fuzz(file_lines[i], removed[anchor_j]):
+                            continue
+                        block_start = i - anchor_j
+                        if block_start < 0 or block_start + n > len(file_lines):
+                            continue
+                        if all(_fuzz(file_lines[block_start + j], removed[j]) for j in range(n)):
+                            logger.info(
+                                f"[Validator] Pass 3 anchor-fuzzy match at line "
+                                f"{block_start + 1} (anchor={anchor_p[:40]!r})"
+                            )
+                            match_idx = block_start
+                            break
+
+            # Pass 4: similarity score — absolute last resort.
+            # Finds the window in the file whose stripped text most resembles
+            # the removed block. Handles fully-stripped indentation, truncated
+            # comments, and XML tokens that nothing else can match.
+            if match_idx is None:
+                import difflib as _dl
+                non_blank_r = [r.strip() for r in removed if r.strip()]
+                if non_blank_r:
+                    needle_text = "\n".join(r.strip() for r in removed)
+                    best_score = 0.0
+                    best_pos2: Optional[int] = None
+                    for i in range(len(file_lines) - n + 1):
+                        window = "\n".join(f.strip() for f in file_lines[i : i + n])
+                        score = _dl.SequenceMatcher(
+                            None, needle_text, window, autojunk=False
+                        ).ratio()
+                        if score > best_score:
+                            best_score = score
+                            best_pos2 = i
+                    if best_score >= 0.4 and best_pos2 is not None:
                         logger.info(
-                            f"[Validator] Fuzzy match found at line {idx + 1} "
-                            f"for declared offset {old_start}"
+                            f"[Validator] Pass 4 similarity match at line "
+                            f"{best_pos2 + 1} (score={best_score:.2f})"
                         )
-                        match_idx = idx
-                        break
+                        match_idx = best_pos2
 
         if match_idx is None and n > 0:
             return False, (

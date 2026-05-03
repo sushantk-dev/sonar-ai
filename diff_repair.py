@@ -25,6 +25,44 @@ from loguru import logger
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _validate_hunk_counts(patch: str) -> list[str]:
+    """
+    Verify that every @@ -old,count +new,count @@ header's declared counts
+    match the actual number of lines in the hunk body.
+    Returns a list of error strings (empty = patch is valid).
+    """
+    errors = []
+    hunk_re = re.compile(r"^@@ -\d+,(\d+) \+\d+,(\d+) @@")
+    lines = patch.splitlines(keepends=True)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = hunk_re.match(line)
+        if not m:
+            i += 1
+            continue
+        declared_old = int(m.group(1))
+        declared_new = int(m.group(2))
+        i += 1
+        body: list[str] = []
+        while i < len(lines) and not lines[i].startswith("@@") and not lines[i].startswith("---") and not lines[i].startswith("+++"):
+            body.append(lines[i])
+            i += 1
+        actual_old = sum(1 for l in body if l.startswith(" ") or l.startswith("-") or l.rstrip("\r\n") == "")
+        actual_new = sum(1 for l in body if l.startswith(" ") or l.startswith("+") or l.rstrip("\r\n") == "")
+        if actual_old != declared_old:
+            errors.append(
+                f"Hunk count mismatch: declared old={declared_old} actual={actual_old} "
+                f"(near: {line.rstrip()!r})"
+            )
+        if actual_new != declared_new:
+            errors.append(
+                f"Hunk count mismatch: declared new={declared_new} actual={actual_new} "
+                f"(near: {line.rstrip()!r})"
+            )
+    return errors
+
+
 def repair_diff(patch: str, file_path: str) -> str:
     """
     Return a version of ``patch`` that git apply will accept against ``file_path``.
@@ -56,8 +94,14 @@ def repair_diff(patch: str, file_path: str) -> str:
     try:
         fixed = _fix_offsets(patch, file_lines)
         if fixed != patch:
-            logger.info("[DiffRepair] Strategy A: @@ offsets corrected")
-            return fixed
+            count_errors = _validate_hunk_counts(fixed)
+            if count_errors:
+                for e in count_errors:
+                    logger.warning(f"[DiffRepair] Strategy A produced bad counts: {e}")
+                # Don't return a corrupt patch — fall through to B
+            else:
+                logger.info("[DiffRepair] Strategy A: @@ offsets corrected")
+                return fixed
     except Exception as exc:
         logger.debug(f"[DiffRepair] Strategy A failed: {exc}")
 
@@ -300,6 +344,7 @@ def _fix_offsets(patch: str, file_lines: list[str]) -> str:
     result: list[str] = []
     lines = patch.splitlines(keepends=True)
     i = 0
+    cumulative_offset = 0  # net lines added/removed by all prior hunks
 
     while i < len(lines):
         line = lines[i]
@@ -317,23 +362,42 @@ def _fix_offsets(patch: str, file_lines: list[str]) -> str:
             i += 1
 
         removed = [l[1:].rstrip() for l in hunk_body if l.startswith("-")]
+        added   = [l[1:].rstrip() for l in hunk_body if l.startswith("+")]
 
         if not removed:
             ctx = [l[1:].rstrip() for l in hunk_body if l.startswith(" ") and l[1:].strip()]
             anchor = _find_sequence(ctx, file_stripped) if ctx else None
         else:
             anchor = _find_sequence(removed, file_stripped)
+
         if anchor is None:
             result.append(line)
             result.extend(hunk_body)
             continue
 
-        old_count = sum(1 for l in hunk_body if not l.startswith("+"))
-        new_count = sum(1 for l in hunk_body if not l.startswith("-"))
-        new_plus  = anchor + (int(m.group(3)) - int(m.group(1)))
-        suffix    = _clean_hunk_suffix(m.group(5) or "")
-        result.append(f"@@ -{anchor},{old_count} +{new_plus},{new_count} @@{suffix}\n")
+        # Count context lines (leading space), removed (-), and added (+)
+        # A line that is blank inside the hunk is treated as a context line
+        ctx_count = sum(
+            1 for l in hunk_body
+            if l.startswith(" ") or (l.rstrip("\r\n") == "")
+        )
+        rem_count = len(removed)
+        add_count = len(added)
+
+        old_count = ctx_count + rem_count   # lines consumed from old file
+        new_count = ctx_count + add_count   # lines produced in new file
+
+        old_start = anchor
+        new_start = anchor + cumulative_offset
+
+        suffix = _clean_hunk_suffix(m.group(5) or "")
+        result.append(
+            f"@@ -{old_start},{old_count} +{new_start},{new_count} @@{suffix}\n"
+        )
         result.extend(hunk_body)
+
+        # Update cumulative offset for subsequent hunks
+        cumulative_offset += add_count - rem_count
 
     return "".join(result)
 
@@ -375,9 +439,44 @@ def _find_sequence(needles: list[str], haystack: list[str]) -> Optional[int]:
             return True  # blank needle = wildcard
         return nd in h or h in nd
 
-    for i in range(len(haystack) - n + 1):
-        if all(_fuzzy_line_match(haystack[i + j], needles[j]) for j in range(n)):
-            return i + 1
+    # Pass 3 — anchor-fuzzy: find the longest non-blank needle as anchor,
+    # verify surrounding block. Avoids false matches on short tokens like <!--
+    anchor_j = max(range(n), key=lambda j: len(needles[j].strip()))
+    anchor_needle = needles[anchor_j].strip()
+
+    if anchor_needle:
+        for i, hay_line in enumerate(haystack):
+            if not _fuzzy_line_match(hay_line, needles[anchor_j]):
+                continue
+            block_start = i - anchor_j
+            if block_start < 0 or block_start + n > len(haystack):
+                continue
+            if all(_fuzzy_line_match(haystack[block_start + j], needles[j]) for j in range(n)):
+                return block_start + 1
+
+    # Pass 4 — similarity score: find the block whose stripped text best matches
+    # the needle sequence. Catches cases where indentation is fully stripped or
+    # content differs significantly (e.g. XML comment blocks, truncated lines).
+    non_blank = [nd.strip() for nd in needles if nd.strip()]
+    if non_blank:
+        needle_text = "\n".join(nd.strip() for nd in needles)
+        best_score = 0.0
+        best_pos: Optional[int] = None
+        THRESHOLD = 0.4
+
+        for i in range(len(haystack) - n + 1):
+            window = "\n".join(h.strip() for h in haystack[i : i + n])
+            score = difflib.SequenceMatcher(None, needle_text, window, autojunk=False).ratio()
+            if score > best_score:
+                best_score = score
+                best_pos = i
+
+        if best_score >= THRESHOLD and best_pos is not None:
+            logger.info(
+                f"[DiffRepair] Pass 4 similarity match at line {best_pos + 1} "
+                f"(score={best_score:.2f}, anchor={anchor_needle[:40]!r})"
+            )
+            return best_pos + 1
 
     return None
 
@@ -404,7 +503,7 @@ def _rebuild_from_intent(patch: str, file_lines: list[str], file_path: str) -> O
 
     for removed, added, context_before, context_after in hunks:
         if removed:
-            # Locate the lines to remove
+            # Locate the lines to remove — pass raw lines, _find_sequence handles normalisation
             pos = _find_sequence(removed, file_stripped)
             if pos is None:
                 logger.debug(f"[DiffRepair-B] Cannot locate removed: {removed[:2]}")
@@ -568,13 +667,13 @@ def _parse_hunks(
 
             for l in hunk_body:
                 if l.startswith("-"):
-                    removed.append(l[1:].rstrip())
+                    removed.append(l[1:])          # preserve content exactly — no rstrip
                     seen_change = True
                 elif l.startswith("+"):
                     added.append(l[1:])
                     seen_change = True
                 elif l.startswith(" "):
-                    ctx_line = l[1:].rstrip()
+                    ctx_line = l[1:]               # preserve content exactly
                     if not seen_change:
                         context_before.append(ctx_line)
                     else:
