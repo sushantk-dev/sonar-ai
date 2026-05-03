@@ -24,7 +24,7 @@ from loguru import logger
 
 from config import settings
 from prompts import planner_prompt, generator_prompt, critic_prompt, format_rag_context
-from state import AgentState, PlannerOutput, GeneratorOutput, CriticOutput, RAGContext
+from state import AgentState, PlannerOutput, GeneratorOutput, CriticOutput, RAGContext, SonarRuleDetail
 
 
 # ── LLM factory ──────────────────────────────────────────────────────────────
@@ -78,43 +78,76 @@ def _clean_patch_hunks(patch: str) -> str:
 def _rule_kb_entry_text(state: AgentState) -> str:
     """Format the Rule KB entry for the current issue, or a generic note if missing.
 
+    Merges two sources (live data takes precedence over static KB):
+      1. state['sonar_rule_detail'] — fetched live from /api/rules/show
+      2. state['rule_kb']           — local static JSON knowledge base
+
     Supports both legacy schema (name/short/severity/description/fix_strategy/examples)
     and the extended FindBugs-compatible schema that adds type, tags, and impacts.
     """
     rule_kb: dict = state.get("rule_kb", {})
     issue = state.get("current_issue", {})
     rule_key = issue.get("rule_key", "")
-    entry = rule_kb.get(rule_key)
-    if not entry:
-        return f"No KB entry for rule {rule_key}. Apply generic best-practice remediation."
 
-    # -- Core fields (always present) ------------------------------------------
-    lines = [
-        f"Name: {entry.get('name', '')}",
-        f"Description: {entry.get('description', '')}",
-        f"Fix Strategy: {entry.get('fix_strategy', '')}",
-        f"Example Before: {entry.get('example_before', '')}",
-        f"Example After: {entry.get('example_after', '')}",
-    ]
+    # ── 1. Live rule detail from SonarQube API ─────────────────────────────────
+    live: SonarRuleDetail = state.get("sonar_rule_detail", {}) or {}
+    live_lines: list[str] = []
 
-    # -- Extended fields (FindBugs-compatible schema) ---------------------------
-    rule_type = entry.get("type")
-    if rule_type:
-        lines.append(f"Type: {rule_type}")
-
-    tags = entry.get("tags")
+    if live.get("name"):
+        live_lines.append(f"[LIVE] Name: {live['name']}")
+    if live.get("type"):
+        live_lines.append(f"[LIVE] Type: {live['type']}")
+    if live.get("severity"):
+        live_lines.append(f"[LIVE] Severity: {live['severity']}")
+    if live.get("lang_name"):
+        live_lines.append(f"[LIVE] Language: {live['lang_name']}")
+    if live.get("rem_fn_type"):
+        live_lines.append(f"[LIVE] Remediation: {live['rem_fn_type']} ({live.get('rem_fn_base_effort', '')})")
+    tags = list(live.get("tags", []) or []) + list(live.get("sys_tags", []) or [])
     if tags:
-        lines.append(f"Tags: {', '.join(tags)}")
+        live_lines.append(f"[LIVE] Tags: {', '.join(tags)}")
+    if live.get("fix_summary"):
+        live_lines.append(f"[LIVE] Fix Guidance:\n{live['fix_summary']}")
 
-    impacts = entry.get("impacts")
-    if impacts:
-        impact_strs = [
-            f"{imp.get('softwareQuality', '')} ({imp.get('severity', '')})"
-            for imp in impacts
+    # ── 2. Static KB entry ─────────────────────────────────────────────────────
+    entry = rule_kb.get(rule_key)
+    static_lines: list[str] = []
+
+    if entry:
+        static_lines = [
+            f"Name: {entry.get('name', '')}",
+            f"Description: {entry.get('description', '')}",
+            f"Fix Strategy: {entry.get('fix_strategy', '')}",
+            f"Example Before: {entry.get('example_before', '')}",
+            f"Example After: {entry.get('example_after', '')}",
         ]
-        lines.append(f"Impacts: {'; '.join(impact_strs)}")
+        rule_type = entry.get("type")
+        if rule_type:
+            static_lines.append(f"Type: {rule_type}")
+        tags_kb = entry.get("tags")
+        if tags_kb:
+            static_lines.append(f"Tags: {', '.join(tags_kb)}")
+        impacts = entry.get("impacts")
+        if impacts:
+            impact_strs = [
+                f"{imp.get('softwareQuality', '')} ({imp.get('severity', '')})"
+                for imp in impacts
+            ]
+            static_lines.append(f"Impacts: {'; '.join(impact_strs)}")
 
-    return "\n".join(lines)
+    # ── Combine: live first, then static KB ────────────────────────────────────
+    if not live_lines and not static_lines:
+        return f"No KB entry or live rule data for rule {rule_key}. Apply generic best-practice remediation."
+
+    parts: list[str] = []
+    if live_lines:
+        parts.append("## Live Rule Data (from SonarQube API)")
+        parts.extend(live_lines)
+    if static_lines:
+        parts.append("## Static KB Entry")
+        parts.extend(static_lines)
+
+    return "\n".join(parts)
 
 
 # ── RAG node ─────────────────────────────────────────────────────────────────
@@ -162,7 +195,134 @@ def retrieve_rag_context(state: AgentState) -> AgentState:
     return {**state, "rag_context": rag_ctx}
 
 
-# ── LLM·1  Planner ────────────────────────────────────────────────────────────
+# ── Sonar Rule Fetch node ─────────────────────────────────────────────────────
+
+def fetch_sonar_rule(state: AgentState) -> AgentState:
+    """
+    LangGraph node — fetch live rule details from the SonarQube /api/rules/show
+    endpoint for the current issue's rule_key.
+
+    Populates state['sonar_rule_detail'] with:
+      - name, html_desc, severity, type, status, lang, tags, sys_tags
+      - rem_fn_type, rem_fn_base_effort
+      - fix_summary  (plain-text guidance distilled from htmlDesc)
+
+    Silently no-ops if SONAR_TOKEN or SONAR_HOST_URL are not configured,
+    or if the rule is not found (graceful degradation).
+    """
+    issue = state.get("current_issue", {})
+    rule_key = issue.get("rule_key", "")
+
+    empty_detail: SonarRuleDetail = {
+        "rule_key": rule_key,
+        "name": "",
+        "html_desc": "",
+        "severity": issue.get("severity", ""),
+        "type": "",
+        "status": "",
+        "lang": "",
+        "lang_name": "",
+        "tags": [],
+        "sys_tags": [],
+        "rem_fn_type": "",
+        "rem_fn_base_effort": "",
+        "fix_summary": "",
+    }
+
+    if not settings.sonar_token or not settings.sonar_host_url:
+        logger.info(
+            f"[RuleFetch] SONAR_TOKEN/HOST not configured — skipping rule fetch for {rule_key}"
+        )
+        return {**state, "sonar_rule_detail": empty_detail}
+
+    logger.info(f"[RuleFetch] Fetching rule details for {rule_key}")
+
+    try:
+        import requests as _req
+        import html as _html
+        import re as _re
+
+        base_url = settings.sonar_host_url.rstrip("/")
+        resp = _req.get(
+            f"{base_url}/api/rules/show",
+            auth=(settings.sonar_token, ""),
+            params={"key": rule_key},
+            timeout=15,
+        )
+
+        if resp.status_code == 404:
+            logger.warning(f"[RuleFetch] Rule {rule_key} not found in SonarQube (404)")
+            return {**state, "sonar_rule_detail": empty_detail}
+
+        if resp.status_code != 200:
+            logger.warning(
+                f"[RuleFetch] SonarQube returned HTTP {resp.status_code} for rule {rule_key}"
+            )
+            return {**state, "sonar_rule_detail": empty_detail}
+
+        body = resp.json()
+        rule = body.get("rule", {})
+
+        # Extract HTML description — prefer mdDesc if present, fall back to htmlDesc
+        html_desc = rule.get("htmlDesc", "") or rule.get("mdDesc", "")
+
+        # Distil a plain-text fix summary by stripping HTML tags
+        plain_desc = _html.unescape(_re.sub(r"<[^>]+>", " ", html_desc))
+        plain_desc = _re.sub(r"\s{2,}", " ", plain_desc).strip()
+
+        # Try to pull just the "Compliant Solution" or "How to fix" section
+        fix_summary = _extract_fix_section(plain_desc, html_desc)
+
+        detail: SonarRuleDetail = {
+            "rule_key":           rule_key,
+            "name":               rule.get("name", ""),
+            "html_desc":          html_desc,
+            "severity":           rule.get("severity", issue.get("severity", "")),
+            "type":               rule.get("type", ""),
+            "status":             rule.get("status", ""),
+            "lang":               rule.get("lang", ""),
+            "lang_name":          rule.get("langName", ""),
+            "tags":               rule.get("tags", []),
+            "sys_tags":           rule.get("sysTags", []),
+            "rem_fn_type":        rule.get("remFnType", ""),
+            "rem_fn_base_effort": rule.get("remFnBaseEffort", ""),
+            "fix_summary":        fix_summary,
+        }
+
+        logger.info(
+            f"[RuleFetch] ✅ Fetched rule '{detail['name']}' "
+            f"(type={detail['type']}, effort={detail['rem_fn_base_effort']})"
+        )
+        return {**state, "sonar_rule_detail": detail}
+
+    except Exception as exc:
+        logger.warning(f"[RuleFetch] Non-fatal error fetching rule {rule_key}: {exc}")
+        return {**state, "sonar_rule_detail": empty_detail}
+
+
+def _extract_fix_section(plain_text: str, html: str) -> str:
+    """
+    Extract the most relevant fix guidance from a SonarQube rule description.
+    Looks for 'Compliant Solution', 'How to fix', or 'Recommended' sections.
+    Falls back to the first 600 chars of plain text if no section is found.
+    """
+    import re as _re
+
+    # Try to find a compliant/fix section in the HTML (between headings)
+    section_patterns = [
+        r"(?:Compliant[^<]*Solution|How to[^<]*[Ff]ix|Recommended[^<]*Practice)(.*?)(?=<h\d|$)",
+        r"(?:Non-?compliant Code|Noncompliant Code)(.*?)(?:Compliant|$)",
+    ]
+    for pat in section_patterns:
+        m = _re.search(pat, html, _re.DOTALL | _re.IGNORECASE)
+        if m:
+            snippet = _re.sub(r"<[^>]+>", " ", m.group(0))
+            snippet = _re.sub(r"\s{2,}", " ", snippet).strip()
+            if len(snippet) > 30:
+                return snippet[:800]
+
+    # Fall back to first 600 chars of plain description
+    return plain_text[:600] if plain_text else ""
 
 def plan_fix(state: AgentState) -> AgentState:
     """

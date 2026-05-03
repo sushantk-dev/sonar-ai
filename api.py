@@ -115,7 +115,7 @@ def _pipeline_worker(
     def set_status(status: str, error: str = "") -> None:
         event_queue.put({"type": "status", "status": status, "error": error})
 
-    step_labels = ["Ingest","Load Repo","RAG Fetch",
+    step_labels = ["Ingest","Load Repo","RAG Fetch","Rule Fetch",
                    "Planner","Generator","Critic","Validate","Deliver"]
     for label in step_labels:
         push(label, "pending")
@@ -140,14 +140,15 @@ def _pipeline_worker(
         def _intercepting_info(msg: str, *a, **kw):  # type: ignore[misc]
             _orig_info(msg, *a, **kw)
             m = str(msg)
-            if   "[Ingest]"    in m: push("Ingest",     "running", m)
-            elif "[LoadRepo]"  in m: push("Load Repo",  "running", m)
-            elif "[RAG]"       in m: push("RAG Fetch",  "running", m)
-            elif "[Planner]"   in m: push("Planner",    "running", m)
-            elif "[Generator]" in m: push("Generator",  "running", m)
-            elif "[Critic]"    in m: push("Critic",     "running", m)
-            elif "[Validate]"  in m: push("Validate",   "running", m)
-            elif "[Deliver]"   in m: push("Deliver",    "running", m)
+            if   "[Ingest]"    in m: push("Ingest",      "running", m)
+            elif "[LoadRepo]"  in m: push("Load Repo",   "running", m)
+            elif "[RAG]"       in m: push("RAG Fetch",   "running", m)
+            elif "[RuleFetch]" in m: push("Rule Fetch",  "running", m)
+            elif "[Planner]"   in m: push("Planner",     "running", m)
+            elif "[Generator]" in m: push("Generator",   "running", m)
+            elif "[Critic]"    in m: push("Critic",      "running", m)
+            elif "[Validate]"  in m: push("Validate",    "running", m)
+            elif "[Deliver]"   in m: push("Deliver",     "running", m)
 
         _log.info = _intercepting_info  # type: ignore[method-assign]
 
@@ -358,6 +359,88 @@ def delete_issue(key: str) -> dict:
 
 
 # ── Live SonarQube fetch ──────────────────────────────────────────────────────
+
+@app.get("/api/sonar/rule/{rule_key:path}")
+def get_sonar_rule(rule_key: str) -> dict:
+    """
+    Proxy a GET /api/rules/show call to SonarQube for a single rule key.
+    Returns structured rule metadata including name, description, fix guidance,
+    remediation effort, type, severity, and tags.
+
+    Example: GET /api/sonar/rule/java:S1128
+    """
+    import requests as _requests
+    import html as _html
+    import re as _re
+    from config import settings as s
+
+    if not s.sonar_token:
+        raise HTTPException(400, "SONAR_TOKEN is not configured. Add it in Settings.")
+    if not s.sonar_host_url:
+        raise HTTPException(400, "SONAR_HOST_URL is not configured. Add it in Settings.")
+
+    base_url = s.sonar_host_url.rstrip("/")
+    try:
+        resp = _requests.get(
+            f"{base_url}/api/rules/show",
+            auth=(s.sonar_token, ""),
+            params={"key": rule_key},
+            timeout=15,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"Could not reach SonarQube: {exc}") from exc
+
+    if resp.status_code == 401:
+        raise HTTPException(401, "SonarQube authentication failed — check SONAR_TOKEN")
+    if resp.status_code == 404:
+        raise HTTPException(404, f"Rule '{rule_key}' not found in SonarQube")
+    if resp.status_code != 200:
+        raise HTTPException(resp.status_code, f"SonarQube error: {resp.text[:300]}")
+
+    body = resp.json()
+    rule = body.get("rule", {})
+
+    # Build plain-text description by stripping HTML
+    html_desc = rule.get("htmlDesc", "") or rule.get("mdDesc", "")
+    plain_desc = _html.unescape(_re.sub(r"<[^>]+>", " ", html_desc))
+    plain_desc = _re.sub(r"\s{2,}", " ", plain_desc).strip()
+
+    # Try to extract compliant/fix section
+    fix_summary = ""
+    for pat in [
+        r"(?:Compliant[^<]*Solution|How to[^<]*[Ff]ix|Recommended[^<]*Practice)(.*?)(?=<h\d|$)",
+    ]:
+        m = _re.search(pat, html_desc, _re.DOTALL | _re.IGNORECASE)
+        if m:
+            snippet = _html.unescape(_re.sub(r"<[^>]+>", " ", m.group(0)))
+            snippet = _re.sub(r"\s{2,}", " ", snippet).strip()
+            if len(snippet) > 30:
+                fix_summary = snippet[:800]
+                break
+    if not fix_summary:
+        fix_summary = plain_desc[:600]
+
+    logger.info(f"[API] Served rule detail for {rule_key}: {rule.get('name', '')}")
+
+    return {
+        "rule_key":           rule_key,
+        "name":               rule.get("name", ""),
+        "html_desc":          html_desc,
+        "plain_desc":         plain_desc[:2000],
+        "fix_summary":        fix_summary,
+        "severity":           rule.get("severity", ""),
+        "type":               rule.get("type", ""),
+        "status":             rule.get("status", ""),
+        "lang":               rule.get("lang", ""),
+        "lang_name":          rule.get("langName", ""),
+        "tags":               rule.get("tags", []),
+        "sys_tags":           rule.get("sysTags", []),
+        "rem_fn_type":        rule.get("remFnType", ""),
+        "rem_fn_base_effort": rule.get("remFnBaseEffort", ""),
+        "is_template":        rule.get("isTemplate", False),
+        "created_at":         rule.get("createdAt", ""),
+    }
+
 
 @app.post("/api/sonar/fetch")
 def fetch_sonar_issues(req: SonarFetchRequest) -> dict:

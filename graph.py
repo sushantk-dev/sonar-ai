@@ -31,7 +31,7 @@ from state import AgentState, SonarIssue, IssueResult
 from config import settings, configure_langsmith
 from parser import parse_sonar_report, load_rule_kb
 from repo_loader import clone_repo, create_fix_branch, resolve_java_file, extract_method_context
-from agents import plan_fix, generate_fix, critique_fix, retrieve_rag_context
+from agents import plan_fix, generate_fix, critique_fix, retrieve_rag_context, fetch_sonar_rule
 from validator import validate
 from deliver import deliver
 
@@ -136,6 +136,13 @@ def node_load_repo(state: AgentState) -> AgentState:
 def node_rag_retrieve(state: AgentState) -> AgentState:
     """Retrieve similar prior fixes from ChromaDB (Iteration 2)."""
     return retrieve_rag_context(state)
+
+
+# ── Node: fetch_rule ──────────────────────────────────────────────────────────
+
+def node_fetch_rule(state: AgentState) -> AgentState:
+    """Fetch live rule details from SonarQube /api/rules/show (Iteration 3)."""
+    return fetch_sonar_rule(state)
 
 
 # ── Node: plan ────────────────────────────────────────────────────────────────
@@ -278,6 +285,7 @@ def build_sequential_graph() -> StateGraph:
     graph.add_node("ingest", node_ingest)
     graph.add_node("load_repo", node_load_repo)
     graph.add_node("rag_retrieve", node_rag_retrieve)
+    graph.add_node("fetch_rule", node_fetch_rule)
     graph.add_node("plan", node_plan)
     graph.add_node("generate", node_generate)
     graph.add_node("critique", node_critique)
@@ -294,7 +302,8 @@ def build_sequential_graph() -> StateGraph:
         "load_repo", route_after_load_repo,
         {"rag_retrieve": "rag_retrieve", "advance_issue": "advance_issue"}
     )
-    graph.add_edge("rag_retrieve", "plan")
+    graph.add_edge("rag_retrieve", "fetch_rule")
+    graph.add_edge("fetch_rule", "plan")
     graph.add_edge("plan", "generate")
     graph.add_edge("generate", "critique")
     graph.add_conditional_edges(
@@ -351,6 +360,7 @@ def _build_single_issue_subgraph() -> StateGraph:
 
     sg.add_node("load_repo", node_load_repo)
     sg.add_node("rag_retrieve", node_rag_retrieve)
+    sg.add_node("fetch_rule", node_fetch_rule)
     sg.add_node("plan", node_plan)
     sg.add_node("generate", node_generate)
     sg.add_node("critique", node_critique)
@@ -363,7 +373,8 @@ def _build_single_issue_subgraph() -> StateGraph:
         "load_repo", route_after_load_repo,
         {"rag_retrieve": "rag_retrieve", "advance_issue": END}
     )
-    sg.add_edge("rag_retrieve", "plan")
+    sg.add_edge("rag_retrieve", "fetch_rule")
+    sg.add_edge("fetch_rule", "plan")
     sg.add_edge("plan", "generate")
     sg.add_edge("generate", "critique")
     sg.add_conditional_edges(

@@ -62,6 +62,26 @@ class RAGContext(TypedDict):
     retrieved_count: int
 
 
+class SonarRuleDetail(TypedDict, total=False):
+    """
+    Live rule metadata fetched from the SonarQube /api/rules/show endpoint.
+    Populated by the fetch_sonar_rule agent node.
+    """
+    rule_key: str
+    name: str                # Human-readable rule name
+    html_desc: str           # Full HTML description of the rule
+    severity: str            # Default severity from the rule definition
+    type: str                # BUG | CODE_SMELL | VULNERABILITY | SECURITY_HOTSPOT
+    status: str              # READY | DEPRECATED | etc.
+    lang: str                # e.g. "java"
+    lang_name: str           # e.g. "Java"
+    tags: list[str]          # e.g. ["unused", "java8"]
+    sys_tags: list[str]
+    rem_fn_type: str         # CONSTANT_ISSUE | LINEAR | etc.
+    rem_fn_base_effort: str  # e.g. "1min"
+    fix_summary: str         # Extracted plain-text fix guidance (Claude-distilled)
+
+
 class IssueResult(TypedDict):
     """Per-issue outcome stored in pipeline_results list."""
     issue_key: str
@@ -99,6 +119,9 @@ class AgentState(TypedDict, total=False):
 
     # ── RAG (Iteration 2) ─────────────────────────────────────────────────────
     rag_context: RAGContext         # Similar prior fixes from ChromaDB
+
+    # ── Live Sonar Rule Detail (Iteration 3) ──────────────────────────────────
+    sonar_rule_detail: SonarRuleDetail   # Fetched from /api/rules/show
 
     # ── LLM outputs ───────────────────────────────────────────────────────────
     planner_output: PlannerOutput
