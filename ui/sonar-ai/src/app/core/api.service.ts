@@ -47,42 +47,14 @@ export interface RunStatus {
 }
 
 export interface ApiIssue {
-  key:        string;
-  rule_key:   string;
-  severity:   string;
-  component:  string;
-  project?:   string;
-  line:       number;
-  message:    string;
-  status:     string;
-  effort:     string;
-  hash?:      string;
-  text_range?: { start_line: number; end_line: number; start_offset: number; end_offset: number };
-  tags?:      string[];
-  type?:      string;
-}
-
-export interface SonarFetchRequest {
-  component_keys: string;
-  severities?:    string;
-  resolved?:      boolean;
-  ps?:            number;
-}
-
-export interface SonarFetchResponse {
-  message:      string;
-  issue_count:  number;
-  total:        number;
-  effort_total: number;
-  component:    string;
-}
-
-export interface SonarReport {
-  generated_at: string;
-  total:        number;
-  by_severity:  Record<string, { count: number; issues: ApiIssue[] }>;
-  by_rule:      Record<string, { rule_key: string; severity: string; count: number; files: string[] }>;
-  issues:       ApiIssue[];
+  key:       string;
+  rule_key:  string;
+  severity:  string;
+  component: string;
+  line:      number;
+  message:   string;
+  status:    string;
+  effort:    string;
 }
 
 export interface BackendConfig {
@@ -134,17 +106,6 @@ export class ApiService {
   deleteIssue(key: string): Observable<{ message: string; remaining: number }> {
     return this.http.delete<any>(`${this.base}/api/issues/${key}`);
   }
-
-  // ── Live SonarQube fetch ──────────────────────────────────────────────────
-
-  fetchSonarIssues(req: SonarFetchRequest): Observable<SonarFetchResponse> {
-    return this.http.post<SonarFetchResponse>(`${this.base}/api/sonar/fetch`, req);
-  }
-
-  getSonarReport(): Observable<SonarReport> {
-    return this.http.get<SonarReport>(`${this.base}/api/sonar/report`);
-  }
-
 
   // ── Pipeline ──────────────────────────────────────────────────────────────
 
@@ -198,6 +159,10 @@ export class ApiService {
 
   saveConfig(cfg: Partial<BackendConfig>): Observable<{ message: string }> {
     return this.http.post<any>(`${this.base}/api/config`, cfg);
+  }
+
+  reloadConfig(): Observable<{ message: string; sonar_token_set: boolean; sonar_host_url: string }> {
+    return this.http.post<any>(`${this.base}/api/reload`, {});
   }
 
   // ── Error helper ──────────────────────────────────────────────────────────

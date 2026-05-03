@@ -175,7 +175,7 @@ export class SettingsStateService {
 
     // Include token fields if:
     //   - user was actively editing (Change button flow), OR
-    //   - token field has a value typed directly (first-time entry flow, no editingTokens set)
+    //   - token field has a value typed directly (first-time entry, editingTokens not set)
     const editing = this.editingTokens();
 
     if (editing.has('githubToken') || (!this.tokenStatus().githubToken && c.githubToken)) {
@@ -192,9 +192,6 @@ export class SettingsStateService {
 
     this.apiSvc.saveConfig(payload).subscribe({
       next: () => {
-        this.saving.set(false);
-        this.saved.set(true);
-
         // Update tokenStatus based on what was saved
         this.tokenStatus.update(ts => ({
           ...ts,
@@ -206,6 +203,20 @@ export class SettingsStateService {
         this.editingTokens.set(new Set());
         this.cfg.update(cc => ({ ...cc, githubToken: '', sonarToken: '' }));
 
+        // Reload backend config so new .env values take effect immediately
+        // without needing a uvicorn restart
+        this.apiSvc.reloadConfig().subscribe({
+          next: (r) => {
+            
+          },
+          error: () => {
+            // Non-fatal — settings are saved, reload just failed
+            // The user can restart uvicorn manually if needed
+          },
+        });
+
+        this.saving.set(false);
+        this.saved.set(true);
         setTimeout(() => this.saved.set(false), 2500);
       },
       error: (err: Error) => {

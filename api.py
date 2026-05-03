@@ -701,6 +701,30 @@ def get_config() -> dict:
     }
 
 
+@app.post("/api/reload")
+def reload_config() -> dict:
+    """
+    Re-import the config module so updated .env values are picked up
+    without restarting uvicorn. Called automatically by the UI after
+    saving settings.
+    """
+    import importlib
+    try:
+        import config as _config_module
+        importlib.reload(_config_module)
+        # Reassign the module-level singleton so all subsequent imports see the new values
+        _config_module.settings = _config_module.Settings()
+        logger.info("[Reload] Config reloaded from .env")
+        return {
+            "message":       "Config reloaded successfully",
+            "sonar_host_url": _config_module.settings.sonar_host_url,
+            "sonar_token_set": bool(_config_module.settings.sonar_token),
+        }
+    except Exception as exc:
+        logger.error(f"[Reload] Failed to reload config: {exc}")
+        raise HTTPException(500, f"Config reload failed: {exc}") from exc
+
+
 @app.post("/api/config")
 def update_config(req: ConfigUpdateRequest) -> dict:
     env_path = Path(".env")
