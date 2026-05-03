@@ -426,6 +426,26 @@ def fetch_sonar_issues(req: SonarFetchRequest) -> dict:
         raise HTTPException(500, f"Failed to reach SonarQube: {exc}") from exc
 
     _last_report_issues = all_issues
+
+    # Persist fetched issues to disk — survives backend restart,
+    # available to the pipeline exactly like an uploaded report
+    try:
+        uploads_dir = Path(__file__).parent / "uploads"
+        uploads_dir.mkdir(exist_ok=True)
+        report_path = uploads_dir / "sonar-ai-last-report.json"
+        report_data = {
+            "source":       "sonarqube_live_fetch",
+            "component":    req.component_keys,
+            "fetched_at":   time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "total":        total_sonar,
+            "effort_total": effort_total,
+            "issues":       all_issues,
+        }
+        report_path.write_text(json.dumps(report_data, indent=2))
+        logger.info(f"[SonarFetch] Saved {len(all_issues)} issues to {report_path}")
+    except Exception as exc:
+        logger.warning(f"[SonarFetch] Could not save report to disk: {exc}")
+
     logger.info(
         f"[SonarFetch] Fetched {len(all_issues)} issues "
         f"from {req.component_keys} (total={total_sonar})"
