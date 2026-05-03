@@ -71,6 +71,7 @@ class ConfigUpdateRequest(BaseModel):
     github_token:                Optional[str]   = None   # empty string = clear token
     github_repo:                 Optional[str]   = None
     sonar_token:                 Optional[str]   = None   # empty string = clear token
+    sonar_host_url:              Optional[str]   = None
     sonar_org:                   Optional[str]   = None
     planner_temp:                Optional[float] = None
     generator_temp:              Optional[float] = None
@@ -286,170 +287,6 @@ async def upload_report(file: UploadFile = File(...)) -> dict:
 @app.get("/api/issues")
 def get_issues() -> dict:
     return {"issues": _last_report_issues, "total": len(_last_report_issues)}
-
-
-# ── Live SonarQube API proxy ──────────────────────────────────────────────────
-
-class SonarFetchRequest(BaseModel):
-    component_keys: str           # e.g. "com.equifax.usis.batch.falcon:helloworld"
-    severities:     str = "BLOCKER,CRITICAL,MAJOR,MINOR,INFO"
-    resolved:       bool = False
-    ps:             int  = 500    # page size
-
-
-def _normalize_sonar_issue(raw: dict) -> dict:
-    """Map a raw SonarQube issue object to the internal schema."""
-    text_range = raw.get("textRange", {})
-    return {
-        "key":       raw.get("key", ""),
-        "rule_key":  raw.get("rule", ""),
-        "severity":  raw.get("severity", "INFO"),
-        "component": raw.get("component", ""),
-        "project":   raw.get("project", ""),
-        "line":      raw.get("line") or text_range.get("startLine", 0),
-        "message":   raw.get("message", ""),
-        "effort":    raw.get("effort", ""),
-        "status":    raw.get("status", "OPEN"),
-        "hash":      raw.get("hash", ""),
-        "text_range": {
-            "start_line":   text_range.get("startLine", 0),
-            "end_line":     text_range.get("endLine", 0),
-            "start_offset": text_range.get("startOffset", 0),
-            "end_offset":   text_range.get("endOffset", 0),
-        },
-        "tags":      raw.get("tags", []),
-        "type":      raw.get("type", ""),
-        "debt":      raw.get("debt", ""),
-    }
-
-
-@app.post("/api/sonar/fetch")
-def fetch_sonar_issues(req: SonarFetchRequest) -> dict:
-    """
-    Proxy a live SonarQube /api/issues/search call using the configured
-    SONAR_TOKEN and SONAR_HOST_URL, then store results in memory so
-    the issues table and report export work without uploading a file.
-    """
-    global _last_report_issues
-
-    import requests as _requests
-    from config import settings as s
-
-    if not s.sonar_token:
-        raise HTTPException(400, "SONAR_TOKEN is not configured. Add it in Settings.")
-    if not s.sonar_host_url:
-        raise HTTPException(400, "SONAR_HOST_URL is not configured. Add it in Settings.")
-
-    base_url = s.sonar_host_url.rstrip("/")
-    url = f"{base_url}/api/issues/search"
-    params: dict = {
-        "componentKeys": req.component_keys,
-        "resolved":      "false" if not req.resolved else "true",
-        "severities":    req.severities,
-        "ps":            req.ps,
-        "p":             1,
-    }
-
-    all_issues: list[dict] = []
-    effort_total = 0
-    total_sonar  = 0
-
-    try:
-        while True:
-            resp = _requests.get(
-                url,
-                auth=(s.sonar_token, ""),
-                params=params,
-                timeout=30,
-            )
-            if resp.status_code == 401:
-                raise HTTPException(401, "SonarQube authentication failed — check SONAR_TOKEN")
-            if resp.status_code != 200:
-                raise HTTPException(resp.status_code,
-                    f"SonarQube returned HTTP {resp.status_code}: {resp.text[:200]}")
-
-            body = resp.json()
-            total_sonar   = body.get("total", 0)
-            effort_total  = body.get("effortTotal", effort_total)
-            raw_issues    = body.get("issues", [])
-            all_issues   += [_normalize_sonar_issue(i) for i in raw_issues]
-
-            # Pagination: stop when we have all pages
-            page_index = body.get("p", params["p"])
-            page_size  = body.get("ps", req.ps)
-            if page_index * page_size >= total_sonar:
-                break
-            params["p"] = page_index + 1
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(f"[SonarFetch] Error: {exc}")
-        raise HTTPException(500, f"Failed to reach SonarQube: {exc}") from exc
-
-    # Store in memory — same store used by /api/issues and pipeline
-    _last_report_issues = all_issues
-    logger.info(
-        f"[SonarFetch] Fetched {len(all_issues)} issues "
-        f"from {req.component_keys} (total={total_sonar})"
-    )
-
-    return {
-        "message":      f"Fetched {len(all_issues)} issues from SonarQube",
-        "issue_count":  len(all_issues),
-        "total":        total_sonar,
-        "effort_total": effort_total,
-        "component":    req.component_keys,
-    }
-
-
-@app.get("/api/sonar/report")
-def get_structured_report() -> dict:
-    """
-    Return a structured summary report of the currently loaded issues,
-    grouped by severity, with counts, effort totals, and per-rule breakdown.
-    """
-    issues = _last_report_issues
-
-    if not issues:
-        return {
-            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "total":        0,
-            "effort_total": "0min",
-            "by_severity":  {},
-            "by_rule":      {},
-            "issues":       [],
-        }
-
-    sev_order = ["BLOCKER", "CRITICAL", "MAJOR", "MINOR", "INFO"]
-    by_severity: dict[str, list] = {s: [] for s in sev_order}
-    by_rule:     dict[str, dict] = {}
-
-    for iss in issues:
-        sev  = iss.get("severity", "INFO")
-        rule = iss.get("rule_key", "unknown")
-        by_severity.setdefault(sev, []).append(iss)
-
-        if rule not in by_rule:
-            by_rule[rule] = {"rule_key": rule, "severity": sev, "count": 0, "files": []}
-        by_rule[rule]["count"] += 1
-        comp = iss.get("component", "")
-        if comp and comp not in by_rule[rule]["files"]:
-            by_rule[rule]["files"].append(comp)
-
-    severity_summary = {
-        sev: {"count": len(lst), "issues": lst}
-        for sev, lst in by_severity.items()
-        if lst
-    }
-
-    return {
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "total":        len(issues),
-        "by_severity":  severity_summary,
-        "by_rule":      dict(sorted(by_rule.items(), key=lambda x: -x[1]["count"])),
-        "issues":       issues,
-    }
 
 
 @app.delete("/api/issues/{key}")
@@ -716,11 +553,6 @@ def update_config(req: ConfigUpdateRequest) -> dict:
 
     # For token fields, include empty string (explicit clear); skip None (not provided)
     token_fields = {"github_token", "sonar_token"}
-    mapping: dict[str, Any] = {
-        k: v for k, v in req.model_dump().items()
-        if v is not None or k in token_fields
-        if not (v is None and k not in token_fields)
-    }
     # Re-filter: include non-None values AND token fields even if empty string
     mapping = {
         k: v for k, v in req.model_dump().items()
@@ -736,6 +568,7 @@ def update_config(req: ConfigUpdateRequest) -> dict:
         "confidence_medium_threshold":"CONFIDENCE_MEDIUM_THRESHOLD",
         "github_token":               "GITHUB_TOKEN",
         "sonar_token":                "SONAR_TOKEN",
+        "sonar_host_url":             "SONAR_HOST_URL",
         "max_critic_retries":         "MAX_CRITIC_RETRIES",
         "chroma_persist_dir":         "CHROMA_PERSIST_DIR",
         "embedding_model":            "EMBEDDING_MODEL",

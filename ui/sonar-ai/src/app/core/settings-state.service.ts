@@ -171,6 +171,7 @@ export class SettingsStateService {
       chroma_persist_dir:          c.chromaPath,
       embedding_model:             c.embeddingModel,
       rag_top_k:                   c.ragTopK,
+      sonar_host_url:              c.sonarOrg       || undefined,
     };
 
     // Only include token fields if user was actively editing them
