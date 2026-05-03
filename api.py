@@ -137,18 +137,37 @@ def _pipeline_worker(
         # Intercept loguru INFO to drive step state
         _orig_info = _log.info
 
+        # Per-step detail accumulator — appends lines instead of overwriting
+        _step_details: dict[str, list[str]] = {label: [] for label in step_labels}
+
+        def _clean(msg: str, prefix: str) -> str:
+            """Strip the [Tag] prefix and leading whitespace to get human-readable detail."""
+            import re as _re
+            # Remove leading [Tag] bracket token
+            cleaned = _re.sub(r"^\[" + _re.escape(prefix.strip("[]")) + r"\]\s*", "", msg).strip()
+            return cleaned or msg.strip()
+
+        def _push_detail(label: str, msg: str, tag: str) -> None:
+            """Accumulate detail lines for a step and push the joined result."""
+            line = _clean(msg, tag)
+            if line and (not _step_details[label] or _step_details[label][-1] != line):
+                _step_details[label].append(line)
+            # Keep only last 3 lines to avoid overflow
+            detail = " · ".join(_step_details[label][-3:])
+            push(label, "running", detail)
+
         def _intercepting_info(msg: str, *a, **kw):  # type: ignore[misc]
             _orig_info(msg, *a, **kw)
             m = str(msg)
-            if   "[Ingest]"    in m: push("Ingest",      "running", m)
-            elif "[LoadRepo]"  in m: push("Load Repo",   "running", m)
-            elif "[RAG]"       in m: push("RAG Fetch",   "running", m)
-            elif "[RuleFetch]" in m: push("Rule Fetch",  "running", m)
-            elif "[Planner]"   in m: push("Planner",     "running", m)
-            elif "[Generator]" in m: push("Generator",   "running", m)
-            elif "[Critic]"    in m: push("Critic",      "running", m)
-            elif "[Validate]"  in m: push("Validate",    "running", m)
-            elif "[Deliver]"   in m: push("Deliver",     "running", m)
+            if   "[Ingest]"    in m: _push_detail("Ingest",     m, "[Ingest]")
+            elif "[LoadRepo]"  in m: _push_detail("Load Repo",  m, "[LoadRepo]")
+            elif "[RAG]"       in m: _push_detail("RAG Fetch",  m, "[RAG]")
+            elif "[RuleFetch]" in m: _push_detail("Rule Fetch", m, "[RuleFetch]")
+            elif "[Planner]"   in m: _push_detail("Planner",    m, "[Planner]")
+            elif "[Generator]" in m: _push_detail("Generator",  m, "[Generator]")
+            elif "[Critic]"    in m: _push_detail("Critic",     m, "[Critic]")
+            elif "[Validate]"  in m: _push_detail("Validate",   m, "[Validate]")
+            elif "[Deliver]"   in m: _push_detail("Deliver",    m, "[Deliver]")
 
         _log.info = _intercepting_info  # type: ignore[method-assign]
 

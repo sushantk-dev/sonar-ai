@@ -12,13 +12,14 @@ import { RouterLink } from '@angular/router';
 })
 export class DashboardComponent {
   pipelineSteps = [
-    { name: 'Ingest',     desc: 'Parse + sort'     },
-    { name: 'Load Repo',  desc: 'Clone + AST'      },
-    { name: 'RAG Fetch',  desc: 'Vector store'     },
-    { name: 'Planner',    desc: 'Chain-of-thought'  },
-    { name: 'Generator',  desc: 'Unified diff'     },
-    { name: 'Critic',     desc: 'Review patch'     },
-    { name: 'Validate',   desc: 'git + mvn'        },
-    { name: 'Deliver',    desc: 'PR / Escalate'    },
+    { name: 'Ingest',      desc: 'Parse + sort'     },
+    { name: 'Load Repo',   desc: 'Clone + AST'      },
+    { name: 'RAG Fetch',   desc: 'Vector store'     },
+    { name: 'Rule Fetch',  desc: 'Sonar rule API'   },
+    { name: 'Planner',     desc: 'Chain-of-thought'  },
+    { name: 'Generator',   desc: 'Unified diff'     },
+    { name: 'Critic',      desc: 'Review patch'     },
+    { name: 'Validate',    desc: 'git + mvn'        },
+    { name: 'Deliver',     desc: 'PR / Escalate'    },
   ];
 }

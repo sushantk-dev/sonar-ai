@@ -281,7 +281,9 @@
                 <span class="trace-step__label">{{ step.label }}</span>
                 <span class="trace-step__ms" *ngIf="step.ms">{{ step.ms | number }}ms</span>
               </div>
-              <div class="trace-step__detail" *ngIf="step.detail">{{ step.detail }}</div>
+              <div class="trace-step__detail"
+                   *ngIf="step.detail"
+                   style="white-space: pre-wrap; word-break: break-word; overflow: visible;">{{ step.detail }}</div>
               <div class="trace-step__shimmer" *ngIf="step.status === 'running'"></div>
             </div>
           </div>
