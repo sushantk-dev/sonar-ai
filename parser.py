@@ -70,7 +70,7 @@ def parse_sonar_report(report_path: str | Path) -> list[SonarIssue]:
 
         issue: SonarIssue = {
             "key": raw.get("key", ""),
-            "rule_key": raw.get("rule", ""),
+            "rule_key": raw.get("rule_key", ""),
             "severity": raw.get("severity", "MAJOR").upper(),
             "component": component,
             "line": int(line) if line else 0,
