@@ -90,25 +90,6 @@ export interface SonarReport {
   issues:       ApiIssue[];
 }
 
-export interface SonarRuleDetail {
-  rule_key:           string;
-  name:               string;
-  html_desc:          string;
-  plain_desc:         string;
-  fix_summary:        string;
-  severity:           string;
-  type:               string;
-  status:             string;
-  lang:               string;
-  lang_name:          string;
-  tags:               string[];
-  sys_tags:           string[];
-  rem_fn_type:        string;
-  rem_fn_base_effort: string;
-  is_template:        boolean;
-  created_at:         string;
-}
-
 export interface BackendConfig {
   gcp_project:                 string;
   vertex_model:                string;
@@ -120,6 +101,8 @@ export interface BackendConfig {
   github_repo:                 string;
   sonar_token:                 string;
   sonar_host_url:              string;
+  planner_temperature:         number;
+  generator_temperature:       number;
   max_critic_retries:          number;
   chroma_persist_dir:          string;
   embedding_model:             string;
@@ -167,15 +150,6 @@ export class ApiService {
 
   getSonarReport(): Observable<SonarReport> {
     return this.http.get<SonarReport>(`${this.base}/api/sonar/report`);
-  }
-
-  /**
-   * Fetch live rule metadata from SonarQube for a given rule key.
-   * Returns name, description, fix guidance, remediation effort, type, etc.
-   * Example: getSonarRule('java:S1128')
-   */
-  getSonarRule(ruleKey: string): Observable<SonarRuleDetail> {
-    return this.http.get<SonarRuleDetail>(`${this.base}/api/sonar/rule/${encodeURIComponent(ruleKey)}`);
   }
 
   // ── Pipeline ──────────────────────────────────────────────────────────────
