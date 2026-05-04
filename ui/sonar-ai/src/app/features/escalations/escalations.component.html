@@ -56,42 +56,45 @@
       <ng-container *ngIf="!loading()">
         <ng-container *ngFor="let item of items()">
 
-          <div class="file-card"
-               [class.file-card--active]="selected()?.filename === item.filename"
-               [class.file-card--deleting]="deleteKey() === item.filename"
-               style="overflow: visible;"
-               (click)="select(item)">
+          <div class="card-group" [class.card-group--deleting]="deleteKey() === item.filename">
 
-            <div class="file-card__top" style="overflow: visible;">
-              <span class="pill {{ sevClass(item.severity) }}">{{ item.severity }}</span>
-              <span class="file-card__rule" style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ item.rule_key }}</span>
-              <button class="del-btn" title="Delete" style="flex-shrink: 0; overflow: visible;" (click)="requestDelete(item.filename, $event)">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <path d="M2 3H10M4 3V2.5C4 2.2 4.2 2 4.5 2H7.5C7.8 2 8 2.2 8 2.5V3M5 5.5V9M7 5.5V9M3 3L3.5 10H8.5L9 3"
-                        stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </button>
+            <div class="file-card"
+                 [class.file-card--active]="selected()?.filename === item.filename"
+                 [class.file-card--deleting]="deleteKey() === item.filename"
+                 (click)="select(item)">
+
+              <div class="file-card__top">
+                <span class="pill {{ sevClass(item.severity) }}">{{ item.severity }}</span>
+                <span class="file-card__rule">{{ item.rule_key }}</span>
+                <button class="del-btn" title="Delete" (click)="requestDelete(item.filename, $event)">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <path d="M2 3H10M4 3V2.5C4 2.2 4.2 2 4.5 2H7.5C7.8 2 8 2.2 8 2.5V3M5 5.5V9M7 5.5V9M3 3L3.5 10H8.5L9 3"
+                          stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+
+              <div class="file-card__file">{{ item.file_name || item.filename }}</div>
+
+              <div class="file-card__foot">
+                <span>{{ formatDate(item.modified_at) }}</span>
+                <span>{{ formatSize(item.size_bytes) }}</span>
+              </div>
             </div>
 
-            <div class="file-card__file">{{ item.file_name || item.filename }}</div>
-
-            <div class="file-card__foot">
-              <span>{{ formatDate(item.modified_at) }}</span>
-              <span>{{ formatSize(item.size_bytes) }}</span>
+            <!-- Inline delete confirm -->
+            <div class="delete-confirm" *ngIf="deleteKey() === item.filename">
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.3"/>
+                <path d="M6.5 4V7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              </svg>
+              <span>Delete <strong>{{ item.filename }}</strong>?</span>
+              <div class="delete-confirm__actions">
+                <button class="delete-confirm__cancel" (click)="cancelDelete($event)">Cancel</button>
+                <button class="delete-confirm__ok"     (click)="confirmDelete(item.filename, $event)">Delete</button>
+              </div>
             </div>
-          </div>
 
-          <!-- Inline delete confirm -->
-          <div class="delete-confirm" *ngIf="deleteKey() === item.filename">
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-              <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.3"/>
-              <path d="M6.5 4V7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-            </svg>
-            <span>Delete <strong>{{ item.filename }}</strong>?</span>
-            <div class="delete-confirm__actions">
-              <button class="delete-confirm__cancel" (click)="cancelDelete($event)">Cancel</button>
-              <button class="delete-confirm__ok"     (click)="confirmDelete(item.filename, $event)">Delete</button>
-            </div>
           </div>
 
         </ng-container>
