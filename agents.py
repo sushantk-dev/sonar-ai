@@ -343,7 +343,7 @@ def plan_fix(state: AgentState) -> AgentState:
     if similar_fixes:
         logger.info(f"[Planner] Including {len(similar_fixes)} RAG example(s) in prompt")
 
-    llm = _make_llm(temperature=0.1)
+    llm = _make_llm(temperature=settings.planner_temperature)
     chain = planner_prompt | llm
 
     prompt_vars = {
@@ -411,7 +411,7 @@ def generate_fix(state: AgentState) -> AgentState:
         if test_error:
             retry_feedback += f"\nTest failure:\n```\n{test_error[:800]}\n```\n"
 
-    llm = _make_llm(temperature=0.3)
+    llm = _make_llm(temperature=settings.generator_temperature)
     chain = generator_prompt | llm
 
     repo_root = state.get("repo_local_path", "")
@@ -474,7 +474,7 @@ def critique_fix(state: AgentState) -> AgentState:
 
     logger.info(f"[Critic] reviewing patch for rule={issue['rule_key']}")
 
-    llm = _make_llm(temperature=0.1)
+    llm = _make_llm(temperature=settings.planner_temperature)
     chain = critic_prompt | llm
 
     changed_methods = generator_out.get("changed_methods", [])

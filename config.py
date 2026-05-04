@@ -58,6 +58,10 @@ class Settings(BaseSettings):
         description="SonarQube host URL",
     )
 
+    # ── Agent temperatures ────────────────────────────────────────────────────
+    planner_temperature: float = Field(default=0.1, description="Temperature for the Planner LLM")
+    generator_temperature: float = Field(default=0.3, description="Temperature for the Generator LLM")
+
     # ── Pipeline behaviour ────────────────────────────────────────────────────
     max_critic_retries: int = Field(default=1, description="Max LLM fix retry loops")
     compile_timeout: int = Field(default=120, description="mvn compile timeout seconds")

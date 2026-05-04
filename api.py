@@ -166,7 +166,7 @@ def _pipeline_worker(
             elif "[Planner]"   in m: _push_detail("Planner",    m, "[Planner]")
             elif "[Generator]" in m: _push_detail("Generator",  m, "[Generator]")
             elif "[Critic]"    in m: _push_detail("Critic",     m, "[Critic]")
-            elif "[Validator]" in m: _push_detail("Validate",   m, "[Validator]")
+            elif "[Validate]"  in m: _push_detail("Validate",   m, "[Validate]")
             elif "[Deliver]"   in m: _push_detail("Deliver",    m, "[Deliver]")
 
         _log.info = _intercepting_info  # type: ignore[method-assign]
@@ -813,6 +813,8 @@ def get_config() -> dict:
         "github_repo":                 "",
         "sonar_token":                 mask(s.sonar_token),
         "sonar_host_url":              s.sonar_host_url,
+        "planner_temperature":          s.planner_temperature,
+        "generator_temperature":        s.generator_temperature,
         "max_critic_retries":          s.max_critic_retries,
         "chroma_persist_dir":          s.chroma_persist_dir,
         "embedding_model":             s.embedding_model,
@@ -870,6 +872,8 @@ def update_config(req: ConfigUpdateRequest) -> dict:
         "github_token":                "GITHUB_TOKEN",
         "sonar_token":                 "SONAR_TOKEN",
         "sonar_host_url":              "SONAR_HOST_URL",
+        "planner_temp":                "PLANNER_TEMPERATURE",
+        "generator_temp":              "GENERATOR_TEMPERATURE",
         "max_critic_retries":          "MAX_CRITIC_RETRIES",
         "chroma_persist_dir":          "CHROMA_PERSIST_DIR",
         "embedding_model":             "EMBEDDING_MODEL",
