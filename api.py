@@ -694,8 +694,10 @@ def cancel_run(run_id: str) -> dict:
         run["error"]  = "Cancelled by user"
         for s in run.get("steps", []):
             if s["status"] in ("running", "pending"):
-                s["status"] = "error"
-                s["detail"] = "Cancelled by user"
+                was_running = s["status"] == "running"
+                s["status"] = "cancelled"
+                if was_running:
+                    s["detail"] = "Cancelled by user"
 
     return {"message": f"Run {run_id} cancelled", "run_id": run_id}
 

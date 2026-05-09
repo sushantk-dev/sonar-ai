@@ -251,8 +251,8 @@ export class PipelineStateService {
         status:  'cancelled',
         outcome: 'cancelled',
         steps: r.steps.map(s =>
-          s.status === 'running'
-            ? { ...s, status: 'error' as const, detail: 'Cancelled by user' }
+          s.status === 'running' || s.status === 'pending'
+            ? { ...s, status: 'cancelled' as any, detail: s.status === 'running' ? 'Cancelled by user' : '' }
             : s
         ),
       };

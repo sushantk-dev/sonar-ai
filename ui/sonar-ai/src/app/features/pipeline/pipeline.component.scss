@@ -502,17 +502,19 @@
 
   &--cancelled {
     .trace-step__dot {
-      background: rgba(161,110,43,.12);
-      border-color: rgba(161,110,43,.45);
+      background: rgba(161,110,43,.15);
+      border-color: rgba(161,110,43,.5);
       color: #a16e2b;
     }
-    .trace-step__line { background: rgba(161,110,43,.2); }
-    .trace-step__label { color: var(--text-secondary); opacity: 0.7; }
+    .trace-step__line { background: rgba(161,110,43,.25); }
+    .trace-step__label { color: #a16e2b; font-weight: 500; }
     .trace-step__detail {
-      border-color: rgba(161,110,43,.2);
-      background: rgba(161,110,43,.04);
-      color: var(--text-muted);
+      border-color: rgba(161,110,43,.25);
+      background: rgba(161,110,43,.05);
+      color: #a16e2b;
+      opacity: 0.85;
     }
+    .trace-step__ms { color: rgba(161,110,43,.7); }
   }
 
   &:last-child .trace-step__body { padding-bottom: 0; }
