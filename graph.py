@@ -511,7 +511,34 @@ def run_pipeline(
     logger.info(f"  rescan  : {settings.enable_sonar_rescan}")
     logger.info("=" * 60)
 
-    final_state = app.invoke(initial_state)
+    try:
+        final_state = app.invoke(initial_state)
+    except KeyboardInterrupt:
+        logger.warning("[Pipeline] Interrupted by user (KeyboardInterrupt)")
+        final_state = {
+            **initial_state,
+            "errors": ["Pipeline interrupted by user"],
+            "pipeline_results": initial_state.get("pipeline_results", []),
+            "done": True,
+        }
+    except Exception as exc:
+        # Any exception that escapes all node-level try/catch blocks lands here.
+        # We log the full traceback, build a minimal final state so _print_summary
+        # can still run, and re-raise so the caller knows the pipeline failed.
+        import traceback
+        logger.error("[Pipeline] FATAL — unhandled exception escaped the graph:")
+        logger.error(traceback.format_exc())
+
+        # Attempt to salvage any results that were recorded before the crash
+        partial_results = initial_state.get("pipeline_results", [])
+        final_state = {
+            **initial_state,
+            "errors": [f"Fatal pipeline error: {type(exc).__name__}: {exc}"],
+            "pipeline_results": partial_results,
+            "done": True,
+        }
+        _print_summary(final_state)
+        raise  # re-raise so CI / calling code sees a non-zero exit
 
     _print_summary(final_state)
 
@@ -521,7 +548,15 @@ def run_pipeline(
 # ── Summary report ────────────────────────────────────────────────────────────
 
 def _print_summary(final_state: AgentState) -> None:
-    """Print a human-readable pipeline summary with outcome per issue."""
+    """Print a human-readable pipeline summary with outcome per issue. Never raises."""
+    try:
+        _print_summary_inner(final_state)
+    except Exception as exc:
+        logger.warning(f"[Pipeline] Summary rendering failed (non-fatal): {exc}")
+
+
+def _print_summary_inner(final_state: AgentState) -> None:
+    """Inner summary logic — called by _print_summary inside a safety try/except."""
     results: list[IssueResult] = final_state.get("pipeline_results", [])
     errors: list[str] = final_state.get("errors", [])
 
