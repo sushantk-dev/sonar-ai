@@ -247,21 +247,97 @@ def _commit_fix(state: AgentState) -> None:
     logger.info(f"[Deliver] Committed: {commit_msg.splitlines()[0]!r}")
 
 
+# Retry configuration for git push
+_PUSH_MAX_ATTEMPTS  = 4   # 1 initial + 3 retries
+_PUSH_BASE_DELAY    = 2   # seconds — doubles each attempt: 2, 4, 8
+_PUSH_MAX_DELAY     = 30  # cap so we never wait more than 30 s between attempts
+
+# Error substrings that indicate a transient network condition worth retrying
+_PUSH_TRANSIENT_ERRORS = (
+    "connection reset",
+    "connection timed out",
+    "unable to connect",
+    "could not resolve host",
+    "failed to connect",
+    "the remote end hung up",
+    "timed out",
+    "eof",
+    "broken pipe",
+    "recv failure",
+)
+
+# Error substrings that are permanent — no point retrying
+_PUSH_PERMANENT_ERRORS = (
+    "rejected",          # non-fast-forward or protected branch
+    "denied",            # permission error
+    "repository not found",
+    "authentication failed",
+    "403",
+    "401",
+)
+
+
 def _push_branch(state: AgentState) -> None:
+    """
+    Push the fix branch to origin with exponential backoff on transient failures.
+
+    Retry schedule (seconds): 2 → 4 → 8  (capped at _PUSH_MAX_DELAY)
+    Permanent errors (auth, rejected, not-found) are never retried.
+    Transient errors (network reset, timeout, EOF) are retried up to
+    _PUSH_MAX_ATTEMPTS - 1 times before giving up.
+    """
+    import time as _time
+
     repo = git.Repo(state["repo_local_path"])
     branch = state.get("fix_branch", "")
     if not branch:
         raise ValueError("fix_branch is not set in state")
 
-    try:
-        repo.git.push(
-            "origin",
-            f"refs/heads/{branch}:refs/heads/{branch}",
-            "--set-upstream",
-        )
-        logger.info(f"[Deliver] Pushed branch {branch} → origin")
-    except git.GitCommandError as exc:
-        raise git.GitCommandError("push", exc.status, stderr=exc.stderr) from exc
+    ref_spec = f"refs/heads/{branch}:refs/heads/{branch}"
+    last_exc: Optional[Exception] = None
+
+    for attempt in range(1, _PUSH_MAX_ATTEMPTS + 1):
+        try:
+            repo.git.push("origin", ref_spec, "--set-upstream")
+            logger.info(f"[Deliver] Pushed branch {branch} → origin (attempt {attempt})")
+            return  # success
+
+        except git.GitCommandError as exc:
+            stderr = (exc.stderr or "").lower()
+            last_exc = exc
+
+            # ── Permanent error — re-raise immediately, no retry ──────────────
+            if any(marker in stderr for marker in _PUSH_PERMANENT_ERRORS):
+                logger.error(
+                    f"[Deliver] Push failed with permanent error (no retry): {exc.stderr.strip()}"
+                )
+                raise
+
+            # ── Transient error — log and decide whether to retry ─────────────
+            is_transient = any(marker in stderr for marker in _PUSH_TRANSIENT_ERRORS)
+            if not is_transient:
+                # Unknown error category — log as warning and still retry
+                # (better to retry unnecessarily than to fail on a recoverable error)
+                logger.warning(
+                    f"[Deliver] Push failed with unrecognised error (will retry): {exc.stderr.strip()[:200]}"
+                )
+
+            if attempt < _PUSH_MAX_ATTEMPTS:
+                delay = min(_PUSH_BASE_DELAY * (2 ** (attempt - 1)), _PUSH_MAX_DELAY)
+                logger.warning(
+                    f"[Deliver] Push attempt {attempt}/{_PUSH_MAX_ATTEMPTS} failed "
+                    f"({'transient' if is_transient else 'unknown'} error) — "
+                    f"retrying in {delay}s: {exc.stderr.strip()[:120]}"
+                )
+                _time.sleep(delay)
+            else:
+                logger.error(
+                    f"[Deliver] Push failed after {_PUSH_MAX_ATTEMPTS} attempts. "
+                    f"Last error: {exc.stderr.strip()[:300]}"
+                )
+
+    # All attempts exhausted — raise the last exception
+    raise last_exc
 
 
 # ── GitHub PR ─────────────────────────────────────────────────────────────────
