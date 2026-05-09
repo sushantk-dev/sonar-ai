@@ -118,7 +118,7 @@ export class PipelineStateService {
       ruleKey:   '—',           // blank until first result comes in
       severity:  'INFO',
       component: '',
-      steps: ['Ingest','Load Repo','RAG Fetch','Planner','Generator','Critic','Validate','Deliver']
+      steps: ['Ingest','Load Repo','RAG Fetch','Fetch Rule','Planner','Generator','Critic','Validate','Deliver']
         .map(label => ({ label, status: 'pending' as const, detail: '', ms: 0 })),
       live:    true,
       status:  'running',

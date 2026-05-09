@@ -4,7 +4,7 @@
   <div class="page-header">
     <div>
       <h1>Pipeline Runs</h1>
-      <p class="meta">Per-issue agent trace — Planner → Generator → Critic → Validate → Deliver</p>
+      <p class="meta">9-step agent trace — Ingest → Load Repo → RAG Fetch → Fetch Rule → Planner → Generator → Critic → Validate → Deliver</p>
     </div>
     <div class="header-actions">
       <span class="api-badge" [class.api-badge--live]="!error()">
@@ -142,7 +142,10 @@
 
         <div class="run-card__foot">
           <span>{{ doneCnt(run) }} / {{ run.steps.length }} steps</span>
-          <span *ngIf="run.request" class="run-card__repo" [title]="run.request.repo_url">
+          <span *ngIf="run.status === 'running'" class="run-card__active-step">
+            {{ (run.steps | activeStep) || 'initialising…' }}
+          </span>
+          <span *ngIf="run.request && run.status !== 'running'" class="run-card__repo" [title]="run.request.repo_url">
             {{ run.request.repo_url | slice:run.request.repo_url.lastIndexOf('/')+1 }}
           </span>
         </div>
@@ -180,7 +183,15 @@
               {{ $any(run.outcome) | outcomeLabel }}
             </span>
           </div>
-          <div class="detail__comp">{{ run.component || 'Waiting for first issue…' }}</div>
+          <div class="detail__comp">
+            <ng-container *ngIf="run.component; else compPlaceholder">{{ run.component }}</ng-container>
+            <ng-template #compPlaceholder>
+              <span *ngIf="run.status === 'running'" class="detail__comp--pulse">
+                Initialising pipeline…
+              </span>
+              <span *ngIf="run.status !== 'running'">—</span>
+            </ng-template>
+          </div>
 
           <!-- Action buttons row -->
           <div class="detail__actions" *ngIf="run.request">
@@ -270,16 +281,25 @@
 
         <!-- Step trace -->
         <div class="trace">
-          <div *ngFor="let step of run.steps; let last = last"
+          <div *ngFor="let step of run.steps; let i = index; let last = last"
                class="trace-step trace-step--{{ step.status }}">
             <div class="trace-step__track">
-              <div class="trace-step__dot"></div>
+              <div class="trace-step__dot">
+                <span class="trace-step__num" *ngIf="step.status === 'pending'">{{ i + 1 }}</span>
+                <svg *ngIf="step.status === 'done'" width="8" height="8" viewBox="0 0 8 8" fill="none">
+                  <path d="M1.5 4L3.2 5.8L6.5 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <svg *ngIf="step.status === 'error'" width="8" height="8" viewBox="0 0 8 8" fill="none">
+                  <path d="M2 2L6 6M6 2L2 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+              </div>
               <div class="trace-step__line" *ngIf="!last"></div>
             </div>
             <div class="trace-step__body">
               <div class="trace-step__top">
                 <span class="trace-step__label">{{ step.label }}</span>
                 <span class="trace-step__ms" *ngIf="step.ms">{{ step.ms | number }}ms</span>
+                <span class="trace-step__running-badge" *ngIf="step.status === 'running'">running</span>
               </div>
               <div class="trace-step__detail"
                    *ngIf="step.detail"

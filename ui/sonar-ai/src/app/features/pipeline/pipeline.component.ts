@@ -6,11 +6,12 @@ import { PipelineStateService, UiRun, RunRequest } from '../../core/pipeline-sta
 import { SevClassPipe }    from '../../shared/sev-class.pipe';
 import { OutcomeClassPipe } from '../../shared/outcome-class.pipe';
 import { OutcomeLabelPipe } from '../../shared/outcome-label.pipe';
+import { ActiveStepPipe }  from '../../shared/active-step.pipe';
 
 @Component({
   selector: 'app-pipeline',
   standalone: true,
-  imports: [CommonModule, FormsModule, SevClassPipe, OutcomeClassPipe, OutcomeLabelPipe],
+  imports: [CommonModule, FormsModule, SevClassPipe, OutcomeClassPipe, OutcomeLabelPipe, ActiveStepPipe],
   templateUrl: './pipeline.component.html',
   styleUrl:    './pipeline.component.scss',
 })
