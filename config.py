@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     generator_temperature: float = Field(default=0.3, description="Temperature for the Generator LLM")
 
     # ── Pipeline behaviour ────────────────────────────────────────────────────
-    max_critic_retries: int = Field(default=1, description="Max LLM fix retry loops")
+    max_critic_retries: int = Field(default=3, description="Max LLM fix retry loops")
     compile_timeout: int = Field(default=120, description="mvn compile timeout seconds")
     test_timeout: int = Field(default=180, description="mvn test timeout seconds")
     clone_dir: str = Field(

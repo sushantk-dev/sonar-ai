@@ -154,9 +154,7 @@ def node_plan(state: AgentState) -> AgentState:
 
 # ── Node: generate ────────────────────────────────────────────────────────────
 
-def node_generate(state: AgentState) -> AgentState:
-    """LLM·2 Generator — produce unified diff patch."""
-    return generate_fix(state)
+# node_generate is defined alongside route_after_critique above (handles retry_count increment)
 
 
 # ── Node: critique ────────────────────────────────────────────────────────────
@@ -236,11 +234,25 @@ def route_after_critique(state: AgentState) -> Literal["validate", "generate"]:
         logger.info(
             f"[Router] Critic rejected — retry {retry_count + 1}/{settings.max_critic_retries}"
         )
-        state["retry_count"] = retry_count + 1
+        # NOTE: retry_count is incremented inside node_generate (not here)
+        # to avoid mutating shared state inside a pure routing function.
         return "generate"
 
     logger.warning("[Router] Critic rejected and retries exhausted — proceeding to validate")
     return "validate"
+
+
+def node_generate(state: AgentState) -> AgentState:
+    """
+    LLM·2 Generator — produce unified diff patch.
+    Increments retry_count when the critic has previously rejected the patch,
+    so generate_fix() sees the correct count and decays temperature accordingly.
+    """
+    critic_out = state.get("critic_output", {})
+    # If the critic has run and rejected, this is a retry — increment before calling generate
+    if critic_out and not critic_out.get("approved", True):
+        state = {**state, "retry_count": state.get("retry_count", 0) + 1}
+    return generate_fix(state)
 
 
 def route_after_ingest(state: AgentState) -> Literal["load_repo", END]:
@@ -254,6 +266,26 @@ def route_after_load_repo(state: AgentState) -> Literal["rag_retrieve", "advance
     if not state.get("file_path"):
         return "advance_issue"
     return "rag_retrieve"
+
+
+def route_after_validate(state: AgentState) -> Literal["deliver", "generate"]:
+    """
+    If the diff failed to apply AND we still have retries left, route back to
+    generate so the LLM can produce a corrected patch.
+    This covers the case where the Critic approved the patch but it was still
+    structurally corrupt (wrong offsets, hallucinated context lines, etc.).
+    """
+    validation = state.get("validation", {})
+    retry_count = state.get("retry_count", 0)
+
+    if not validation.get("diff_ok") and retry_count < settings.max_critic_retries:
+        logger.info(
+            f"[Router] Diff apply failed — routing back to generator "
+            f"(retry {retry_count + 1}/{settings.max_critic_retries})"
+        )
+        return "generate"
+
+    return "deliver"
 
 
 def route_after_deliver(state: AgentState) -> Literal["advance_issue", END]:
@@ -310,7 +342,10 @@ def build_sequential_graph() -> StateGraph:
         "critique", route_after_critique,
         {"validate": "validate", "generate": "generate"},
     )
-    graph.add_edge("validate", "deliver")
+    graph.add_conditional_edges(
+        "validate", route_after_validate,
+        {"deliver": "deliver", "generate": "generate"}
+    )
     graph.add_conditional_edges(
         "deliver", route_after_deliver,
         {"advance_issue": "advance_issue", END: END}
@@ -381,7 +416,10 @@ def _build_single_issue_subgraph() -> StateGraph:
         "critique", route_after_critique,
         {"validate": "validate", "generate": "generate"},
     )
-    sg.add_edge("validate", "deliver")
+    sg.add_conditional_edges(
+        "validate", route_after_validate,
+        {"deliver": "deliver", "generate": "generate"}
+    )
     sg.add_edge("deliver", END)
 
     return sg.compile()

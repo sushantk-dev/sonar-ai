@@ -380,11 +380,47 @@ def plan_fix(state: AgentState) -> AgentState:
 
 # ── LLM·2  Generator ─────────────────────────────────────────────────────────
 
+def _extract_failing_hunk(patch: str, error: str) -> str:
+    """
+    Return the hunk from a unified diff that is closest to the line number
+    mentioned in a compiler or git-apply error message.
+    Used to give the Generator precise feedback on which hunk to fix.
+    """
+    if not patch or not error:
+        return ""
+    import re as _re
+    line_match = _re.search(r":(\d+):", error)
+    if not line_match:
+        return ""
+    error_line = int(line_match.group(1))
+    best_hunk = ""
+    best_dist = 9999
+    for m in _re.finditer(r"(@@ -(\d+).*?@@[^\n]*\n(?:[ +\-\\][^\n]*\n?)*)", patch):
+        hunk_start_match = _re.search(r"-(\d+)", m.group(1))
+        if not hunk_start_match:
+            continue
+        hunk_line = int(hunk_start_match.group(1))
+        dist = abs(hunk_line - error_line)
+        if dist < best_dist:
+            best_dist = dist
+            best_hunk = m.group(0)
+    # Only return if reasonably close (within 50 lines)
+    return best_hunk[:600] if best_dist < 50 else ""
+
+
 def generate_fix(state: AgentState) -> AgentState:
     """
     Generate a minimal unified diff fixing the Sonar issue.
     Populates state['generator_output'].
     Appends critic feedback to the prompt on retry iterations.
+
+    Retry loop improvements (Iteration 3):
+    - retry_count is incremented in the router BEFORE this node runs, so
+      retry_count=0 means first attempt, retry_count=1 means second, etc.
+    - Temperature decays by 0.1 per retry making the model progressively more
+      deterministic — critical for accurate '-' line reproduction.
+    - On retries, feedback now includes the specific failing hunk (extracted
+      from the previous patch) so the LLM knows exactly which part to fix.
     """
     issue = state["current_issue"]
     retry_count = state.get("retry_count", 0)
@@ -392,6 +428,7 @@ def generate_fix(state: AgentState) -> AgentState:
 
     logger.info(f"[Generator] retry={retry_count} rule={issue['rule_key']}")
 
+    # ── Retry feedback block ──────────────────────────────────────────────────
     retry_feedback = ""
     if retry_count > 0:
         critic_out = state.get("critic_output", {})
@@ -403,15 +440,41 @@ def generate_fix(state: AgentState) -> AgentState:
         test_error = validation.get("test_error", "")
 
         retry_feedback = (
-            "## ⚠ Previous Attempt Was Rejected — Fix These Issues\n"
+            f"## ⚠ Attempt {retry_count} Was Rejected — Fix These Issues\n"
             f"Critic concerns:\n{concern_text}\n"
         )
+
         if compiler_error:
+            # Extract the specific failing hunk for precise feedback
+            prev_patch = state.get("generator_output", {}).get("patch_hunks", "")
+            failing_hunk = _extract_failing_hunk(prev_patch, compiler_error)
+            if failing_hunk:
+                retry_feedback += (
+                    f"\nThe following hunk caused the failure — DO NOT reuse it:\n"
+                    f"```diff\n{failing_hunk}\n```\n"
+                    "Produce a corrected version of this hunk only.\n"
+                )
             retry_feedback += f"\nCompiler error:\n```\n{compiler_error[:800]}\n```\n"
+
         if test_error:
             retry_feedback += f"\nTest failure:\n```\n{test_error[:800]}\n```\n"
 
-    llm = _make_llm(temperature=settings.generator_temperature)
+        retry_feedback += (
+            "\nCRITICAL: Copy ALL '-' lines CHARACTER-FOR-CHARACTER from the file "
+            "listing below. Do not paraphrase, truncate, or alter removed lines.\n"
+        )
+
+    # ── Temperature decay: more deterministic on each retry ───────────────────
+    # retry 0 → settings.generator_temperature (e.g. 0.3)
+    # retry 1 → 0.2,  retry 2 → 0.1,  retry 3+ → 0.0
+    effective_temp = max(0.0, settings.generator_temperature - (0.1 * retry_count))
+    if retry_count > 0:
+        logger.info(
+            f"[Generator] Temperature decayed to {effective_temp:.1f} "
+            f"(base={settings.generator_temperature}, retry={retry_count})"
+        )
+
+    llm = _make_llm(temperature=effective_temp)
     chain = generator_prompt | llm
 
     repo_root = state.get("repo_local_path", "")
