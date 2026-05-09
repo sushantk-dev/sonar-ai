@@ -246,13 +246,28 @@
 
   &--pulse {
     color: var(--brand);
-    animation: text-pulse 1.6s ease-in-out infinite;
+    font-weight: 500;
+    animation: text-pulse 1.8s ease-in-out infinite;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+
+    &::before {
+      content: '';
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--brand);
+      animation: pulse-dot 1.2s ease-in-out infinite;
+      flex-shrink: 0;
+    }
   }
 }
 
 @keyframes text-pulse {
   0%, 100% { opacity: 1; }
-  50%       { opacity: 0.45; }
+  50%       { opacity: 0.5; }
 }
 
 // Stat strip
@@ -543,6 +558,8 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
 }
 
 // API status badge
@@ -554,6 +571,8 @@
   border-radius: 20px;
   font-size: 11.5px;
   font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
   background: rgba(220,38,38,.08);
   color: var(--status-danger);
   border: 1px solid rgba(220,38,38,.2);
@@ -933,18 +952,7 @@
   white-space: nowrap;
 }
 
-// Active step name shown in card footer during live run
-.run-card__active-step {
-  font-size: 10.5px;
-  color: var(--brand);
-  font-family: var(--font-mono);
-  font-weight: 500;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  animation: text-pulse 1.6s ease-in-out infinite;
-}
+
 
 // ── Run card delete button ────────────────────────────────────────────────
 .run-card__del {

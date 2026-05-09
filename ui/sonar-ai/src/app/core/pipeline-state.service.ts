@@ -143,28 +143,40 @@ export class PipelineStateService {
       if (r.id !== runId) return r;
 
       const first = status.results?.[0];
-
-      // Handle no-issues case: pipeline finished but nothing was processed
       const noResults = (status.status === 'done') && (!status.results || status.results.length === 0);
 
-      return {
+      // Smart step merge: backend sends all 9 steps on every poll.
+      // Only replace local steps when the backend shows real progress (any step != pending).
+      let mergedSteps = r.steps;
+      if (status.steps?.length) {
+        const hasProgress = status.steps.some((s: any) => s.status !== 'pending');
+        if (hasProgress) {
+          mergedSteps = status.steps.map((bs: any) => {
+            const local = r.steps.find(ls => ls.label === bs.label);
+            return { ...bs, detail: bs.detail || local?.detail || '', ms: bs.ms || local?.ms || 0 };
+          });
+        }
+      }
+
+      const updated: UiRun = {
         ...r,
-        steps:      status.steps?.length ? status.steps : r.steps,
+        steps:      mergedSteps,
         outcome:    noResults ? 'empty' : (first?.outcome ?? r.outcome),
         confidence: first ? this.confLabel(first.confidence) : r.confidence,
         prUrl:      first?.pr_url ?? r.prUrl,
         status:     noResults ? 'empty' as any : status.status,
-        // Only overwrite header fields if we have a real result
         ruleKey:    first?.rule_key  ? first.rule_key  : r.ruleKey,
         severity:   first?.severity  ? first.severity  : r.severity,
         component:  first?.file_path ? first.file_path : r.component,
       };
-    }));
 
-    if (this.selected()?.id === runId) {
-      const updated = this.runs().find(r => r.id === runId);
-      if (updated) this.selected.set(updated);
-    }
+      // Sync selected in same signal update tick for instant reactivity
+      if (this.selected()?.id === runId) {
+        this.selected.set(updated);
+      }
+
+      return updated;
+    }));
 
     if (status.status === 'done' || status.status === 'error') {
       this.running.set(false);

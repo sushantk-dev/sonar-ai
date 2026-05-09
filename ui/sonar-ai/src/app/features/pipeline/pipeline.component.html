@@ -142,10 +142,7 @@
 
         <div class="run-card__foot">
           <span>{{ doneCnt(run) }} / {{ run.steps.length }} steps</span>
-          <span *ngIf="run.status === 'running'" class="run-card__active-step">
-            {{ (run.steps | activeStep) || 'initialising…' }}
-          </span>
-          <span *ngIf="run.request && run.status !== 'running'" class="run-card__repo" [title]="run.request.repo_url">
+          <span *ngIf="run.request" class="run-card__repo" [title]="run.request.repo_url">
             {{ run.request.repo_url | slice:run.request.repo_url.lastIndexOf('/')+1 }}
           </span>
         </div>
@@ -187,7 +184,7 @@
             <ng-container *ngIf="run.component; else compPlaceholder">{{ run.component }}</ng-container>
             <ng-template #compPlaceholder>
               <span *ngIf="run.status === 'running'" class="detail__comp--pulse">
-                Initialising pipeline…
+                Running pipeline…
               </span>
               <span *ngIf="run.status !== 'running'">—</span>
             </ng-template>
