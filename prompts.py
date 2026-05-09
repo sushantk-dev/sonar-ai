@@ -1,11 +1,11 @@
 """
-SonarAI — LLM Prompt Templates  (Iteration 2)
+SonarAI — LLM Prompt Templates  (Iteration 3)
 
-Changes from Iteration 1:
-  - Planner prompt now accepts optional {rag_context} few-shot examples
-    from ChromaDB prior fix retrieval.
-  - Generator prompt reinforced with stricter @@ offset rules.
-  - Critic prompt extended to check for RAG-inconsistent changes.
+Changes from Iteration 2:
+  - Planner prompt now requests structured `confidence_factors` (5 sub-scores)
+    instead of a single opaque confidence float, forcing the LLM to reason
+    about each dimension before committing to a number.
+  - Aggregation and calibration of sub-scores is handled in agents.py.
 
 NOTE: All { } in system message strings that are NOT template variables must be
 escaped as {{ }} — LangChain's ChatPromptTemplate treats any single { } as a
@@ -40,8 +40,18 @@ PLANNER_SYSTEM = _EXPERT_JAVA_ENGINEER + (
     "{{\n"
     '  "reasoning": "<chain-of-thought explanation, up to 300 words>",\n'
     '  "strategy": "<concise 1-3 sentence description of the exact code change required>",\n'
-    '  "confidence": <float 0.0-1.0 reflecting how certain you are the fix is safe and complete>\n'
-    "}}"
+    '  "confidence_factors": {{\n'
+    '    "rule_understood": <float 0.0-1.0  how clearly you understand what this rule requires and why it fires here>,\n'
+    '    "fix_is_mechanical": <float 0.0-1.0  1.0 = simple textual substitution with no logic change; 0.0 = requires deep architectural change>,\n'
+    '    "context_sufficient": <float 0.0-1.0  how complete the provided code context is for making the change safely>,\n'
+    '    "side_effects_risk": <float 0.0-1.0  1.0 = no realistic risk of regressions or new bugs; 0.0 = high risk>,\n'
+    '    "rag_match_quality": <float 0.0-1.0  how closely the prior fix examples match this case; use 0.5 if none were provided>\n'
+    "  }}\n"
+    "}}\n\n"
+    "Score each factor independently and honestly. "
+    "Do NOT anchor all factors to the same value. "
+    "A BLOCKER security rule with incomplete context should score low on context_sufficient and side_effects_risk "
+    "even if rule_understood is high."
 )
 
 PLANNER_HUMAN = """\

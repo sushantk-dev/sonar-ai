@@ -491,9 +491,34 @@ def _build_pr_body(
         if rag_count > 0 else "_No similar prior fixes found in vector store._"
     )
 
+    # Confidence factors breakdown table (Iteration 3)
+    _FACTOR_LABELS = {
+        "rule_understood":    "Rule understood",
+        "fix_is_mechanical":  "Fix is mechanical",
+        "context_sufficient": "Context sufficient",
+        "side_effects_risk":  "Side-effects risk",
+        "rag_match_quality":  "RAG match quality",
+    }
+    factors: dict = planner.get("confidence_factors", {})
+    if factors:
+        factor_rows = "\n".join(
+            f"| {_FACTOR_LABELS.get(k, k)} | {'█' * round(v * 10):<10} {v:.0%} |"
+            for k, v in factors.items()
+            if k in _FACTOR_LABELS
+        )
+        confidence_breakdown = (
+            "\n<details>\n<summary>Confidence factor breakdown</summary>\n\n"
+            "| Factor | Score |\n"
+            "|--------|-------|\n"
+            f"{factor_rows}\n\n"
+            "</details>\n"
+        )
+    else:
+        confidence_breakdown = ""
+
     return f"""\
 {badge}  **Confidence score: {confidence_score:.0%}**
-
+{confidence_breakdown}
 ## 🔍 SonarQube Issue
 | Field | Value |
 |-------|-------|

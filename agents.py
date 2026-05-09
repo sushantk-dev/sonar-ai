@@ -570,11 +570,115 @@ def _extract_fix_section(plain_text: str, html: str) -> str:
     # Fall back to first 600 chars of plain description
     return plain_text[:600] if plain_text else ""
 
+# ── Confidence calibration helpers ───────────────────────────────────────────
+
+# Rules where even a correct fix carries elevated risk and should be capped.
+_HIGH_RISK_RULES: frozenset[str] = frozenset({
+    "java:S2068",  # hardcoded credentials
+    "java:S5547",  # weak cipher algorithm
+    "java:S3649",  # SQL injection
+    "java:S2076",  # OS command injection
+    "java:S2631",  # regex injection
+    "java:S5131",  # XSS
+})
+
+# Weights for the five planner sub-scores → must sum to 1.0
+_CONFIDENCE_WEIGHTS: dict[str, float] = {
+    "rule_understood":   0.25,
+    "fix_is_mechanical": 0.30,
+    "context_sufficient": 0.20,
+    "side_effects_risk": 0.15,
+    "rag_match_quality": 0.10,
+}
+
+
+def _aggregate_confidence(factors: dict[str, float]) -> float:
+    """
+    Weighted average of planner sub-scores into a calibrated confidence float.
+
+    Each factor is clamped to [0, 1] before weighting so a misbehaving LLM
+    cannot push the aggregate out of range.  Missing factors default to 0.5
+    (neutral) so callers never get a KeyError.
+    """
+    score = sum(
+        min(max(float(factors.get(k, 0.5)), 0.0), 1.0) * w
+        for k, w in _CONFIDENCE_WEIGHTS.items()
+    )
+    return round(score, 3)
+
+
+def _calibrate_confidence(raw_score: float, state: AgentState) -> float:
+    """
+    Apply rule-based, signal-driven adjustments to the planner's aggregated
+    confidence score.  Uses only information that is deterministically
+    observable at plan time — no LLM calls.
+
+    Adjustments (applied in order, cumulative):
+      +0.10  RAG found a fix with similarity ≥ 0.85  (strong prior evidence)
+      +0.05  RAG found a fix with similarity ≥ 0.70  (moderate prior evidence)
+      −0.15  Rule is in the high-risk security/injection category
+      −0.05  Code context was truncated ("lines omitted" marker present)
+      −0.10  No rule KB entry AND no live SonarQube rule detail available
+      cap 0.75  Issue severity is BLOCKER (always warrants human review)
+
+    The result is clamped to [0.0, 1.0].
+    """
+    score = raw_score
+    issue = state.get("current_issue", {})
+    rag_ctx = state.get("rag_context", {}) or {}
+
+    # ── RAG boost ────────────────────────────────────────────────────────────
+    similar = rag_ctx.get("similar_fixes", [])
+    top_similarity = similar[0].get("similarity", 0.0) if similar else 0.0
+    if top_similarity >= 0.85:
+        score = min(1.0, score + 0.10)
+        logger.debug(f"[Planner] calibration: +0.10 RAG strong match (sim={top_similarity:.2f})")
+    elif top_similarity >= 0.70:
+        score = min(1.0, score + 0.05)
+        logger.debug(f"[Planner] calibration: +0.05 RAG moderate match (sim={top_similarity:.2f})")
+
+    # ── High-risk rule penalty ────────────────────────────────────────────────
+    rule_key = issue.get("rule_key", "")
+    if rule_key in _HIGH_RISK_RULES:
+        score = max(0.0, score - 0.15)
+        logger.debug(f"[Planner] calibration: −0.15 high-risk rule ({rule_key})")
+
+    # ── Truncated context penalty ─────────────────────────────────────────────
+    if "lines omitted" in state.get("method_context", ""):
+        score = max(0.0, score - 0.05)
+        logger.debug("[Planner] calibration: −0.05 truncated method context")
+
+    # ── Missing rule knowledge penalty ───────────────────────────────────────
+    rule_detail = state.get("sonar_rule_detail", {}) or {}
+    rule_kb = state.get("rule_kb", {}) or {}
+    has_live_guidance = bool(rule_detail.get("fix_summary"))
+    has_kb_entry = bool(rule_kb.get(rule_key))
+    if not has_live_guidance and not has_kb_entry:
+        score = max(0.0, score - 0.10)
+        logger.debug("[Planner] calibration: −0.10 no rule KB or live rule detail")
+
+    # ── BLOCKER cap ───────────────────────────────────────────────────────────
+    if issue.get("severity") == "BLOCKER":
+        if score > 0.75:
+            logger.debug(f"[Planner] calibration: capping BLOCKER score {score:.3f} → 0.75")
+            score = 0.75
+
+    return round(min(max(score, 0.0), 1.0), 3)
+
+
 def plan_fix(state: AgentState) -> AgentState:
     """
     Analyse the current Sonar issue with chain-of-thought reasoning.
     Populates state['planner_output'].
-    Includes RAG few-shot examples in the prompt if available.
+
+    Iteration 3 changes:
+      - Requests structured `confidence_factors` (5 sub-scores) from the LLM
+        instead of a single opaque float.
+      - Aggregates sub-scores via _aggregate_confidence() with fixed weights.
+      - Applies signal-driven calibration via _calibrate_confidence() using
+        observable pipeline facts (RAG similarity, severity, rule risk, context
+        completeness, KB coverage).
+      - Stores both raw factors and the final calibrated score in planner_output.
     """
     issue = state["current_issue"]
     logger.info(
@@ -614,10 +718,29 @@ def plan_fix(state: AgentState) -> AgentState:
 
     parsed.setdefault("reasoning", "")
     parsed.setdefault("strategy", "")
-    parsed.setdefault("confidence", 0.5)
+
+    # ── Confidence: aggregate sub-scores → calibrate with signals ─────────────
+    factors: dict[str, float] = parsed.pop("confidence_factors", {})
+    # Graceful fallback: if the LLM returned a bare `confidence` float instead
+    # of the new schema (e.g. during a model rollout), use it as a neutral seed.
+    if not factors and "confidence" in parsed:
+        legacy = float(parsed["confidence"])
+        factors = {k: legacy for k in _CONFIDENCE_WEIGHTS}
+        logger.warning(
+            f"[Planner] LLM returned legacy `confidence` float ({legacy:.2f}) "
+            "instead of confidence_factors — using as uniform seed."
+        )
+
+    raw_aggregated = _aggregate_confidence(factors)
+    calibrated = _calibrate_confidence(raw_aggregated, state)
+
+    parsed["confidence_factors"] = factors        # keep for PR body / audit
+    parsed["confidence"] = calibrated             # this drives HIGH/MEDIUM/LOW routing
 
     logger.info(
-        f"[Planner] confidence={parsed['confidence']:.2f} "
+        f"[Planner] factors={factors} "
+        f"raw_agg={raw_aggregated:.3f} "
+        f"calibrated={calibrated:.3f} "
         f"strategy_preview={parsed['strategy'][:80]!r}"
     )
 
@@ -777,6 +900,15 @@ def critique_fix(state: AgentState) -> AgentState:
     """
     Adversarially review the generated patch.
     Populates state['critic_output'].
+
+    Iteration 3 changes:
+      - After recording the Critic verdict, adjusts planner_output['confidence']
+        based on the outcome so the score used in deliver.py reflects the full
+        pipeline rather than just the Planner's pre-generation guess:
+          approved + no concerns  → +0.05  (clean approval, small boost)
+          approved + concerns     →  0     (approved with notes, unchanged)
+          rejected                → −0.15  (meaningful penalty)
+        The adjusted value is clamped to [0, 1] and stored back in planner_output.
     """
     issue = state["current_issue"]
     generator_out = state.get("generator_output", {})
@@ -818,7 +950,29 @@ def critique_fix(state: AgentState) -> AgentState:
         for concern in parsed["concerns"]:
             logger.warning(f"[Critic] concern: {concern}")
 
-    return {**state, "critic_output": parsed}
+    # ── Confidence adjustment based on Critic verdict ─────────────────────────
+    planner_out = dict(state.get("planner_output", {}))
+    current_conf: float = float(planner_out.get("confidence", 0.5))
+    approved: bool = parsed["approved"]
+    concern_count: int = len(parsed["concerns"])
+
+    if approved and concern_count == 0:
+        delta = +0.05   # clean approval → small boost
+    elif approved:
+        delta = 0.0     # approved with minor notes → no change
+    else:
+        delta = -0.15   # rejected → meaningful penalty
+
+    adjusted_conf = round(min(max(current_conf + delta, 0.0), 1.0), 3)
+    planner_out["confidence"] = adjusted_conf
+
+    if delta != 0.0:
+        logger.info(
+            f"[Critic] confidence adjusted: {current_conf:.3f} → {adjusted_conf:.3f} "
+            f"(delta={delta:+.2f}, approved={approved}, concerns={concern_count})"
+        )
+
+    return {**state, "critic_output": parsed, "planner_output": planner_out}
 
 
 # ── File helpers ──────────────────────────────────────────────────────────────
