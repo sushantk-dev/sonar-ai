@@ -10,12 +10,19 @@ Iteration 2 changes:
   - retrieve_rag_context() is exposed as a standalone node for the graph to call
     before plan_fix, enabling pre-fetch of ChromaDB results.
 
-Resilience addition:
+Resilience additions:
   - All three LLM chain.invoke() calls are wrapped by _invoke_with_retry(), which
     uses tenacity exponential backoff to survive transient Vertex AI 429/503 errors.
     Retry budget: up to LLM_MAX_ATTEMPTS attempts, starting at LLM_RETRY_WAIT_MIN
     seconds, doubling each time up to LLM_RETRY_WAIT_MAX seconds.
     Non-retryable errors (auth, 400 bad request) are re-raised immediately.
+  - Fallback model support: if the primary model (vertex_model) exhausts all
+    retries due to model-level unavailability (404 Not Found, prolonged 503), or
+    if it is outright absent from the Model Garden, _invoke_with_retry
+    transparently rebuilds the chain against vertex_fallback_model and makes one
+    final attempt before giving up. The three node functions (plan_fix,
+    generate_fix, critique_fix) are unaware of this — they pass the prompt
+    template and prompt_vars; the helper owns the model selection.
 """
 
 from __future__ import annotations
@@ -27,7 +34,6 @@ from pathlib import Path
 from typing import Any
 
 from langchain_google_vertexai import ChatVertexAI
-from langchain_core.runnables import Runnable
 from loguru import logger
 from tenacity import (
     retry,
@@ -54,10 +60,18 @@ LLM_RETRY_WAIT_MAX = 30   # cap for exponential backoff
 
 # ── LLM factory ──────────────────────────────────────────────────────────────
 
-def _make_llm(temperature: float = 0.2) -> ChatVertexAI:
-    """Return a ChatVertexAI instance wired to the configured model."""
+def _make_llm(temperature: float = 0.2, model_name: str | None = None) -> ChatVertexAI:
+    """
+    Return a ChatVertexAI instance.
+
+    Args:
+        temperature: Sampling temperature passed to the model.
+        model_name:  Override the model name. Defaults to settings.vertex_model.
+                     Pass settings.vertex_fallback_model explicitly to build
+                     the fallback — keeps callsites readable.
+    """
     return ChatVertexAI(
-        model_name=settings.vertex_model,
+        model_name=model_name or settings.vertex_model,
         project=settings.gcp_project,
         location=settings.gcp_location,
         max_output_tokens=settings.max_tokens,
@@ -65,78 +79,140 @@ def _make_llm(temperature: float = 0.2) -> ChatVertexAI:
     )
 
 
-# ── Retry / backoff helper ────────────────────────────────────────────────────
+# ── Error classification helpers ──────────────────────────────────────────────
 
 def _is_retryable(exc: BaseException) -> bool:
     """
-    Return True for transient Vertex AI / gRPC errors that are safe to retry:
+    Return True for transient Vertex AI / gRPC errors that are safe to retry
+    against the *same* model:
       - HTTP 429  Too Many Requests  (quota exhaustion)
       - HTTP 500  Internal Server Error
-      - HTTP 503  Service Unavailable
+      - HTTP 503  Service Unavailable  (transient blip, not a full outage)
       - gRPC RESOURCE_EXHAUSTED / UNAVAILABLE status codes
+      - DeadlineExceeded (request timeout)
 
-    Return False for permanent errors that should fail immediately:
+    Return False for permanent errors where retrying the same model is pointless:
       - HTTP 400  Bad Request  (malformed prompt / invalid parameter)
       - HTTP 401 / 403  Authentication / Permission denied
-      - HTTP 404  Model not found
+      - HTTP 404  Model not found  (→ triggers fallback instead)
 
     The google-cloud-aiplatform SDK raises google.api_core.exceptions.*
-    which all inherit from GoogleAPICallError and carry an http_status attribute.
+    which all inherit from GoogleAPICallError.
     """
-    # google.api_core exceptions  (preferred — most specific)
     try:
         from google.api_core import exceptions as _gae
         if isinstance(exc, _gae.ResourceExhausted):   # 429
             return True
-        if isinstance(exc, _gae.ServiceUnavailable):  # 503
+        if isinstance(exc, _gae.ServiceUnavailable):  # 503 transient
             return True
         if isinstance(exc, _gae.InternalServerError): # 500
             return True
         if isinstance(exc, _gae.DeadlineExceeded):    # timeout
             return True
-        # Any other GoogleAPICallError is non-retryable (auth, bad request, etc.)
+        # NotFound (404) and all other GoogleAPICallErrors → not retryable here
         if isinstance(exc, _gae.GoogleAPICallError):
             return False
     except ImportError:
         pass
 
-    # Fallback: inspect the string representation for known transient patterns
     msg = str(exc).lower()
-    transient_patterns = ("429", "503", "rate limit", "quota", "unavailable", "deadline")
-    fatal_patterns = ("401", "403", "permission", "unauthenticated", "invalid argument")
+    fatal_patterns = ("401", "403", "404", "permission", "unauthenticated",
+                      "invalid argument", "not found")
+    transient_patterns = ("429", "503", "500", "rate limit", "quota",
+                          "unavailable", "deadline")
     if any(p in msg for p in fatal_patterns):
         return False
     if any(p in msg for p in transient_patterns):
         return True
-
-    # Default: retry unknown errors (fail-safe — a wasted retry is cheaper than
-    # aborting the whole issue on a one-off network glitch)
+    # Unknown errors: retry (a wasted attempt is cheaper than aborting the issue)
     return True
 
 
-def _invoke_with_retry(chain: Runnable, prompt_vars: dict[str, Any], node_name: str) -> Any:
+def _is_model_unavailable(exc: BaseException) -> bool:
     """
-    Call chain.invoke(prompt_vars) with exponential backoff retry.
+    Return True when the error indicates the *model itself* is unavailable or
+    unknown — meaning retrying the same model will never succeed and we should
+    switch to the fallback model instead.
 
-    Retry budget:
-      - Up to LLM_MAX_ATTEMPTS total attempts (1 original + retries).
-      - Wait 2 → 4 → 8 → … seconds between attempts, capped at LLM_RETRY_WAIT_MAX.
-      - Only retryable errors (429, 503, timeouts) trigger a retry.
-      - Non-retryable errors (auth, bad request) propagate immediately.
+    Triggers on:
+      - google.api_core.exceptions.NotFound       (404 — model not in garden)
+      - google.api_core.exceptions.ServiceUnavailable whose message mentions
+        the model name, a region, or "not deployed" (sustained outage, not a blip)
+      - String-match fallbacks for when the SDK is not importable.
+
+    Intentionally conservative: a plain 503 without a model-name mention is
+    treated as a transient blip (_is_retryable=True) rather than a model outage.
+    """
+    try:
+        from google.api_core import exceptions as _gae
+        if isinstance(exc, _gae.NotFound):            # 404 — model absent
+            return True
+        if isinstance(exc, _gae.ServiceUnavailable):
+            msg = str(exc).lower()
+            # "not deployed", "no healthy upstream", region mentions → sustained
+            model_hints = ("not deployed", "no healthy upstream", "us-central1",
+                           "model", settings.vertex_model.lower())
+            if any(h in msg for h in model_hints):
+                return True
+    except ImportError:
+        pass
+
+    msg = str(exc).lower()
+    return any(p in msg for p in ("not found", "404", "not deployed",
+                                   "no healthy upstream", "model unavailable"))
+
+
+# ── Retry / backoff + fallback helper ────────────────────────────────────────
+
+def _invoke_with_retry(
+    prompt: Any,
+    prompt_vars: dict[str, Any],
+    node_name: str,
+    temperature: float = 0.2,
+) -> Any:
+    """
+    Invoke a LangChain prompt template against the configured LLM with
+    exponential backoff retry and automatic fallback to the secondary model.
+
+    Two-phase execution
+    ───────────────────
+    Phase 1 — Primary model (settings.vertex_model):
+      Up to LLM_MAX_ATTEMPTS attempts with exponential backoff.
+      Retryable errors (429, 500, 503 blips, timeouts) are retried.
+      Non-retryable errors (auth, bad request) raise immediately — no fallback.
+      Model-unavailability errors (404, sustained 503) skip remaining retries
+      and drop straight to Phase 2.
+
+    Phase 2 — Fallback model (settings.vertex_fallback_model):
+      A single attempt with no further retry.  If this also fails the
+      exception propagates to the calling node, which records an error result.
+      Phase 2 is skipped entirely if vertex_fallback_model is not configured
+      or is identical to vertex_model.
 
     Args:
-        chain:       A LangChain Runnable (prompt | llm).
-        prompt_vars: Dict passed to chain.invoke().
-        node_name:   Human-readable name for log messages (e.g. "Planner").
+        prompt:      A LangChain prompt template (e.g. planner_prompt).
+                     The chain (prompt | llm) is built internally so the model
+                     can be swapped for the fallback without changing callsites.
+        prompt_vars: Variables forwarded to chain.invoke().
+        node_name:   Label for log messages ("Planner", "Generator", "Critic").
+        temperature: Sampling temperature for the LLM.
 
     Returns:
-        The raw response object from chain.invoke().
+        Raw response object from chain.invoke().
 
     Raises:
-        The last exception if all attempts are exhausted, or immediately on
-        non-retryable errors.
+        The last exception when both phases are exhausted or on non-retryable
+        primary errors.
     """
+    fallback_model = settings.vertex_fallback_model
+    has_fallback = bool(fallback_model and fallback_model != settings.vertex_model)
+
+    # ── Phase 1: primary model with tenacity backoff ──────────────────────────
+    primary_llm = _make_llm(temperature=temperature)
+    primary_chain = prompt | primary_llm
+
     attempt = 0
+    model_unavailable = False  # set True to break out to Phase 2
 
     @retry(
         retry=retry_if_exception(_is_retryable),
@@ -145,24 +221,69 @@ def _invoke_with_retry(chain: Runnable, prompt_vars: dict[str, Any], node_name: 
         before_sleep=before_sleep_log(_logging.getLogger("tenacity"), _logging.WARNING),
         reraise=True,
     )
-    def _attempt() -> Any:
-        nonlocal attempt
+    def _primary_attempt() -> Any:
+        nonlocal attempt, model_unavailable
         attempt += 1
         if attempt > 1:
             logger.warning(
-                f"[{node_name}] LLM retry attempt {attempt}/{LLM_MAX_ATTEMPTS}"
+                f"[{node_name}] Primary model retry {attempt}/{LLM_MAX_ATTEMPTS} "
+                f"(model={settings.vertex_model})"
             )
-        return chain.invoke(prompt_vars)
+        try:
+            return primary_chain.invoke(prompt_vars)
+        except Exception as exc:
+            if _is_model_unavailable(exc):
+                # Signal Phase 2 and stop retrying this model
+                model_unavailable = True
+                logger.error(
+                    f"[{node_name}] Primary model '{settings.vertex_model}' is "
+                    f"unavailable ({type(exc).__name__}: {exc}). "
+                    + ("Falling back to fallback model." if has_fallback
+                       else "No fallback configured — aborting.")
+                )
+                raise  # tenacity sees this as non-retryable (not in _is_retryable)
+            raise
+
+    primary_exc: Exception | None = None
+    try:
+        return _primary_attempt()
+    except RetryError as exc:
+        primary_exc = exc.last_attempt.exception()
+        logger.error(
+            f"[{node_name}] Primary model exhausted all {LLM_MAX_ATTEMPTS} attempts. "
+            f"Last error: {primary_exc}"
+        )
+    except Exception as exc:
+        primary_exc = exc
+        # Non-retryable primary error (auth, bad request, model unavailable)
+        if not model_unavailable:
+            # Auth / bad request — fallback won't help
+            raise
+
+    # ── Phase 2: fallback model (single attempt) ──────────────────────────────
+    if not has_fallback:
+        assert primary_exc is not None
+        raise primary_exc
+
+    logger.warning(
+        f"[{node_name}] Switching to fallback model '{fallback_model}' "
+        f"(primary: {settings.vertex_model})"
+    )
+    fallback_llm = _make_llm(temperature=temperature, model_name=fallback_model)
+    fallback_chain = prompt | fallback_llm
 
     try:
-        return _attempt()
-    except RetryError as exc:
-        # tenacity exhausted all attempts — unwrap and re-raise the original error
-        logger.error(
-            f"[{node_name}] All {LLM_MAX_ATTEMPTS} LLM attempts failed. "
-            f"Last error: {exc.last_attempt.exception()}"
+        response = fallback_chain.invoke(prompt_vars)
+        logger.info(
+            f"[{node_name}] Fallback model '{fallback_model}' succeeded — "
+            "consider updating vertex_model in settings if this keeps happening."
         )
-        raise exc.last_attempt.exception() from exc
+        return response
+    except Exception as exc:
+        logger.error(
+            f"[{node_name}] Fallback model '{fallback_model}' also failed: {exc}"
+        )
+        raise
 
 
 # ── JSON parsing helper ───────────────────────────────────────────────────────
@@ -468,9 +589,6 @@ def plan_fix(state: AgentState) -> AgentState:
     if similar_fixes:
         logger.info(f"[Planner] Including {len(similar_fixes)} RAG example(s) in prompt")
 
-    llm = _make_llm(temperature=settings.planner_temperature)
-    chain = planner_prompt | llm
-
     prompt_vars = {
         "rule_key": issue["rule_key"],
         "severity": issue["severity"],
@@ -483,7 +601,10 @@ def plan_fix(state: AgentState) -> AgentState:
     }
 
     t0 = time.time()
-    response = _invoke_with_retry(chain, prompt_vars, "Planner")
+    response = _invoke_with_retry(
+        planner_prompt, prompt_vars, "Planner",
+        temperature=settings.planner_temperature,
+    )
     elapsed = time.time() - t0
 
     raw = response.content if hasattr(response, "content") else str(response)
@@ -599,9 +720,6 @@ def generate_fix(state: AgentState) -> AgentState:
             f"(base={settings.generator_temperature}, retry={retry_count})"
         )
 
-    llm = _make_llm(temperature=effective_temp)
-    chain = generator_prompt | llm
-
     repo_root = state.get("repo_local_path", "")
     abs_path = state.get("file_path", "")
     try:
@@ -623,7 +741,10 @@ def generate_fix(state: AgentState) -> AgentState:
     }
 
     t0 = time.time()
-    response = _invoke_with_retry(chain, prompt_vars, "Generator")
+    response = _invoke_with_retry(
+        generator_prompt, prompt_vars, "Generator",
+        temperature=effective_temp,
+    )
     elapsed = time.time() - t0
 
     raw = response.content if hasattr(response, "content") else str(response)
@@ -662,9 +783,6 @@ def critique_fix(state: AgentState) -> AgentState:
 
     logger.info(f"[Critic] reviewing patch for rule={issue['rule_key']}")
 
-    llm = _make_llm(temperature=settings.planner_temperature)
-    chain = critic_prompt | llm
-
     changed_methods = generator_out.get("changed_methods", [])
 
     prompt_vars = {
@@ -679,7 +797,10 @@ def critique_fix(state: AgentState) -> AgentState:
     }
 
     t0 = time.time()
-    response = _invoke_with_retry(chain, prompt_vars, "Critic")
+    response = _invoke_with_retry(
+        critic_prompt, prompt_vars, "Critic",
+        temperature=settings.planner_temperature,
+    )
     elapsed = time.time() - t0
 
     raw = response.content if hasattr(response, "content") else str(response)
