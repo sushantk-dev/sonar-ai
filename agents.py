@@ -851,6 +851,16 @@ def generate_fix(state: AgentState) -> AgentState:
         rel_path = Path(abs_path).name
 
     full_file_context = _numbered_file(abs_path, flagged_line=issue.get("line", 0))
+    context_for_prompt = full_file_context or state.get("method_context", "")
+
+    # Extract the first 1-based line number visible in the numbered context so
+    # the Generator prompt can anchor @@ offsets precisely.
+    # _numbered_file() prefixes every code line with "NNNN  " — grab the first one.
+    method_start_line: int = state.get("method_start_line", 0)
+    if not method_start_line and context_for_prompt:
+        _ln_match = re.search(r"^\s*(\d+)\s{2}", context_for_prompt, re.MULTILINE)
+        if _ln_match:
+            method_start_line = int(_ln_match.group(1))
 
     prompt_vars = {
         "rule_key": issue["rule_key"],
@@ -858,8 +868,9 @@ def generate_fix(state: AgentState) -> AgentState:
         "message": issue["message"],
         "file_path": rel_path,
         "flagged_line": issue["line"],
+        "method_start_line": method_start_line,
         "strategy": planner_out.get("strategy", ""),
-        "method_context": full_file_context or state.get("method_context", ""),
+        "method_context": context_for_prompt,
         "retry_feedback": retry_feedback,
     }
 

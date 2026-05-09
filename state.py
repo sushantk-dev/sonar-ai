@@ -1,5 +1,5 @@
 """
-SonarAI — Shared Agent State  (Iteration 2)
+SonarAI — Shared Agent State  (Iteration 3)
 Passed through every node of the LangGraph state graph.
 All fields are optional to allow partial population at different stages.
 
@@ -8,6 +8,11 @@ Iteration 2 additions:
   - pipeline_results   : list of per-issue outcome dicts (for summary report)
   - sonar_rescan_ok    : result of post-fix Sonar API rescan
   - langsmith_run_id   : LangSmith trace ID for this pipeline run
+
+Iteration 3 additions:
+  - method_start_line  : 1-based line number of the first line in method_context,
+                         used as an anchor in the Generator prompt so the LLM can
+                         compute correct @@ offsets without guessing.
 """
 
 from __future__ import annotations
@@ -113,6 +118,7 @@ class AgentState(TypedDict, total=False):
     fix_branch: str                 # Git branch name for this fix
     file_path: str                  # Absolute path to the .java file
     method_context: str             # Extracted method source (or ±50 line slice)
+    method_start_line: int          # 1-based line number of the first line in method_context
 
     # ── Rule KB ───────────────────────────────────────────────────────────────
     rule_kb: dict[str, Any]         # rule_key → rule metadata dict

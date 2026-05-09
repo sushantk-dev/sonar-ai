@@ -101,6 +101,29 @@ GENERATOR_SYSTEM = _EXPERT_JAVA_ENGINEER + (
     "6. Add required imports at the top of the file if the fix needs new classes.\n"
     "7. Do NOT change method signatures unless strictly required.\n"
     "8. Every context line inside a hunk MUST start with a single space character.\n\n"
+    "ONE-SHOT EXAMPLE — study this before writing your diff:\n"
+    "  Suppose 'Context starts at line: 42' and the listing shows:\n"
+    "    42  public void processOrder(Order order) {{\n"
+    "    43      validateOrder(order);\n"
+    "    44      String id = order.getId();\n"
+    "    45      logger.log(Level.FINE, \"Processing: \" + id);\n"
+    "    46      fulfillOrder(order);\n"
+    "    47  }}\n"
+    "  Correct hunk (old_start=42, the line-number prefix of the FIRST hunk line):\n"
+    "\n"
+    "  @@ -42,6 +42,6 @@\n"
+    "   public void processOrder(Order order) {{\n"
+    "       validateOrder(order);\n"
+    "       String id = order.getId();\n"
+    "-      logger.log(Level.FINE, \"Processing: \" + id);\n"
+    "+      logger.log(Level.FINE, \"Processing: {{}}\", id);\n"
+    "       fulfillOrder(order);\n"
+    "   }}\n"
+    "\n"
+    "  Key rules illustrated:\n"
+    "  - @@ old_start (42) equals the 'Context starts at line' anchor from the prompt.\n"
+    "  - Every unchanged context line starts with a single SPACE (not a digit).\n"
+    "  - The '-' line is copied CHARACTER-FOR-CHARACTER from the listing.\n\n"
     "Response schema:\n"
     "{{\n"
     '  "patch_hunks": "<complete unified diff as a single string, use \\n for newlines>",\n'
@@ -120,6 +143,7 @@ GENERATOR_HUMAN = """\
 {strategy}
 
 ## Complete File Listing (line numbers are exact — use them for @@ offsets)
+- Context starts at line: {method_start_line}  ← your first @@ old_start must be ≥ this value
 ```java
 {method_context}
 ```
