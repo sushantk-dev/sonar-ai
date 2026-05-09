@@ -252,7 +252,7 @@ export class PipelineStateService {
         outcome: 'cancelled',
         steps: r.steps.map(s =>
           s.status === 'running' || s.status === 'pending'
-            ? { ...s, status: 'cancelled' as any, detail: s.status === 'running' ? 'Cancelled by user' : '' }
+            ? { ...s, status: 'cancelled' as const, detail: s.status === 'running' ? 'Cancelled by user' : '' }
             : s
         ),
       };

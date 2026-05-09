@@ -18,7 +18,7 @@ export interface RunRequest {
 
 export interface PipelineStep {
   label:  string;
-  status: 'pending' | 'running' | 'done' | 'error';
+  status: 'pending' | 'running' | 'done' | 'error' | 'cancelled';
   detail: string;
   ms:     number;
 }
@@ -39,7 +39,7 @@ export interface IssueResult {
 
 export interface RunStatus {
   id:          string;
-  status:      'queued' | 'running' | 'done' | 'error';
+  status:      'queued' | 'running' | 'done' | 'error' | 'cancelled';
   steps:       PipelineStep[];
   results:     IssueResult[];
   error:       string | null;
