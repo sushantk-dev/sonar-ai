@@ -7,6 +7,8 @@ export class OutcomeLabelPipe implements PipeTransform {
       draft_pr:  'Draft PR',
       escalated: 'Escalated',
       error:     'Error',
+      cancelled: 'Cancelled',
+      empty:     'No Issues',
       pending:   'Pending',
     };
     return value ? (map[value] ?? value) : '—';

@@ -7,6 +7,8 @@ export class OutcomeClassPipe implements PipeTransform {
       draft_pr:  'draft-pr',
       escalated: 'escalated',
       error:     'error',
+      cancelled: 'cancelled',
+      empty:     'empty',
       pending:   'pending',
     };
     return value ? (map[value] ?? 'pending') : 'pending';

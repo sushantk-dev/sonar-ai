@@ -108,6 +108,12 @@
     box-shadow: 0 0 0 3px rgba(91,95,199,.12);
   }
 
+  &--cancelled {
+    border-color: rgba(107,114,128,.3);
+    background: rgba(107,114,128,.04);
+    opacity: 0.75;
+  }
+
   &__top {
     display: flex;
     align-items: center;
@@ -167,9 +173,10 @@
     background: var(--surface-2);
     transition: background 0.3s;
 
-    &--done    { background: var(--status-success); }
-    &--running { background: var(--brand); animation: pulse-seg 1s ease-in-out infinite; }
-    &--error   { background: var(--status-danger); }
+    &--done      { background: var(--status-success); }
+    &--running   { background: var(--brand); animation: pulse-seg 1s ease-in-out infinite; }
+    &--error     { background: var(--status-danger); }
+    &--cancelled { background: rgba(107,114,128,.35); }
   }
 }
 
@@ -479,6 +486,21 @@
     .trace-step__label { color: var(--text-muted); }
   }
 
+  &--cancelled {
+    .trace-step__dot {
+      background: var(--surface-2);
+      border-color: rgba(107,114,128,.4);
+      color: var(--text-muted);
+    }
+    .trace-step__line { opacity: 0.3; }
+    .trace-step__label { color: var(--text-muted); text-decoration: line-through; opacity: 0.6; }
+    .trace-step__detail {
+      border-color: rgba(107,114,128,.2);
+      background: rgba(107,114,128,.04);
+      color: var(--text-muted);
+    }
+  }
+
   &:last-child .trace-step__body { padding-bottom: 0; }
 }
 
@@ -520,6 +542,11 @@
     border-color: rgba(220,38,38,.25);
   }
 
+  &--cancelled {
+    background: rgba(107,114,128,.06);
+    border-color: rgba(107,114,128,.25);
+  }
+
   &__badge {
     width: 32px;
     height: 32px;
@@ -531,10 +558,11 @@
     font-weight: 700;
     flex-shrink: 0;
 
-    &--pr-opened { background: rgba(22,163,74,.15);  color: var(--status-success); }
-    &--draft-pr  { background: rgba(91,95,199,.15);  color: var(--brand); }
-    &--escalated { background: rgba(180,83,9,.15);   color: var(--status-warning); }
-    &--error     { background: rgba(220,38,38,.15);  color: var(--status-danger); }
+    &--pr-opened  { background: rgba(22,163,74,.15);  color: var(--status-success); }
+    &--draft-pr   { background: rgba(91,95,199,.15);  color: var(--brand); }
+    &--escalated  { background: rgba(180,83,9,.15);   color: var(--status-warning); }
+    &--error      { background: rgba(220,38,38,.15);  color: var(--status-danger); }
+    &--cancelled  { background: rgba(107,114,128,.15); color: var(--text-secondary); }
   }
 
   &__title {
@@ -934,11 +962,14 @@
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.5px;
-  padding: 2px 5px;
+  padding: 2px 7px;
   border-radius: 4px;
-  background: rgba(107,114,128,.1);
-  color: var(--text-muted);
-  border: 1px solid rgba(107,114,128,.25);
+  background: rgba(107,114,128,.12);
+  color: var(--text-secondary);
+  border: 1px solid rgba(107,114,128,.35);
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 // ── Run card repo name ────────────────────────────────────────────────────
