@@ -35,55 +35,90 @@ def clone_repo(
     """
     Clone ``repo_url`` into ``clone_base_dir/<repo-name>`` and check out ``commit_sha``.
 
-    If the directory already exists (e.g. from a previous run), it opens the existing
-    repo and fetches + checks out the target commit.
+    Skip re-clone if the directory already exists — open the existing repo, refresh
+    the auth URL, and only fetch from origin when the target commit is not yet local.
+    This makes sequential multi-issue runs fast: the first issue clones once, every
+    subsequent issue for the same repo reuses the local copy.
+
+    Safety guarantees on reuse:
+      - Stale / dirty working tree is hard-reset to HEAD before checkout, so a
+        previous issue's uncommitted changes never bleed into the next one.
+      - The auth token in the remote URL is always refreshed (tokens rotate).
+      - If the local directory exists but is not a valid git repo (corrupted clone),
+        it is deleted and re-cloned from scratch.
 
     Returns:
-        A ``git.Repo`` object pointing at the local clone.
+        A ``git.Repo`` object pointing at the local clone, checked out to commit_sha.
     """
-    # Inject GitHub token into the URL for auth
     auth_url = _inject_token(repo_url, github_token)
-
     repo_name = _repo_name_from_url(repo_url)
     local_path = Path(clone_base_dir) / repo_name
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
     if local_path.exists():
-        logger.info(f"Repo already cloned at {local_path}, reusing")
-        repo = git.Repo(local_path)
-
-        # Ensure the fetch refspec is set — it can be missing on clones that
-        # were made with certain GitPython versions or manually initialised.
-        # git config --add remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
-        with repo.config_writer() as cw:
-            section = 'remote "origin"'
-            cw.set_value(section, "url", auth_url)
-            # Only add the refspec if not already present
-            try:
-                existing = cw.get_value(section, "fetch")
-            except Exception:
-                existing = ""
-            if "+refs/heads/*" not in str(existing):
-                cw.add_value(section, "fetch", "+refs/heads/*:refs/remotes/origin/*")
-
-        # Only fetch if the target SHA is not already present locally
+        # ── Guard: handle corrupted / partial clones ──────────────────────────
         try:
-            repo.commit(commit_sha)
-            logger.info(f"Commit {commit_sha[:12]} already present locally — skipping fetch")
-        except (git.BadName, ValueError):
-            logger.info(f"Fetching from origin to get commit {commit_sha[:12]}")
-            repo.remotes.origin.fetch()
+            repo = git.Repo(local_path)
+        except (git.InvalidGitRepositoryError, git.NoSuchPathError) as exc:
+            logger.warning(
+                f"[Repo] Existing directory at {local_path} is not a valid git repo "
+                f"({exc}) — deleting and re-cloning."
+            )
+            import shutil
+            shutil.rmtree(local_path, ignore_errors=True)
+            repo = git.Repo.clone_from(auth_url, local_path)
+            logger.info(f"[Repo] Re-cloned {repo_url} → {local_path}")
+        else:
+            logger.info(f"[Repo] Reusing existing clone at {local_path}")
+
+            # ── Always refresh auth URL and push URL (tokens rotate) ──────────
+            with repo.config_writer() as cw:
+                section = 'remote "origin"'
+                cw.set_value(section, "url", auth_url)
+                # Ensure full fetch refspec is present
+                try:
+                    existing_fetch = cw.get_value(section, "fetch")
+                except Exception:
+                    existing_fetch = ""
+                if "+refs/heads/*" not in str(existing_fetch):
+                    cw.add_value(section, "fetch", "+refs/heads/*:refs/remotes/origin/*")
+
+            # ── Hard-reset any leftover changes from a previous issue run ─────
+            # This prevents stale diffs or partial patches bleeding into the next issue.
+            try:
+                repo.git.reset("--hard", "HEAD")
+                repo.git.clean("-fd")
+                logger.debug("[Repo] Working tree reset to HEAD (clean slate for new issue)")
+            except git.GitCommandError as exc:
+                logger.warning(f"[Repo] Could not reset working tree: {exc}")
+
+            # ── Fetch only if the target commit is not already local ──────────
+            try:
+                repo.commit(commit_sha)
+                logger.info(f"[Repo] Commit {commit_sha[:12]} already local — skipping fetch")
+            except (git.BadName, ValueError):
+                logger.info(f"[Repo] Fetching origin to get commit {commit_sha[:12]}")
+                try:
+                    repo.remotes.origin.fetch()
+                except git.GitCommandError as exc:
+                    logger.warning(f"[Repo] Fetch failed: {exc} — checkout may fail if SHA is missing")
     else:
-        logger.info(f"Cloning {repo_url} → {local_path}")
+        logger.info(f"[Repo] Cloning {repo_url} → {local_path}")
         repo = git.Repo.clone_from(auth_url, local_path)
 
-    # Set push URL with token on origin (handles both new clones and reused ones)
+    # Always refresh the push URL (token may have changed between runs)
     with repo.config_writer() as cw:
         cw.set_value('remote "origin"', "pushurl", auth_url)
-    logger.debug("[Repo] Push URL configured on origin")
+    logger.debug("[Repo] Push URL refreshed on origin")
 
-    logger.info(f"Checking out commit {commit_sha}")
-    repo.git.checkout(commit_sha)
+    logger.info(f"[Repo] Checking out commit {commit_sha[:12]}")
+    try:
+        repo.git.checkout(commit_sha)
+    except git.GitCommandError as exc:
+        raise RuntimeError(
+            f"Failed to checkout commit {commit_sha}: {exc}. "
+            "The commit may not exist in this repo or the fetch may have failed."
+        ) from exc
 
     return repo
 
