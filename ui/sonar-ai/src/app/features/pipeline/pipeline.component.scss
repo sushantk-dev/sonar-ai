@@ -109,9 +109,18 @@
   }
 
   &--cancelled {
-    border-color: rgba(107,114,128,.3);
-    background: rgba(107,114,128,.04);
-    opacity: 0.75;
+    border-color: rgba(161,110,43,.4);
+    background: rgba(161,110,43,.04);
+    border-left: 3px solid rgba(161,110,43,.7);
+
+    .run-card__rule { color: var(--text-secondary); }
+    .run-card__comp { opacity: 0.7; }
+    .run-card__foot { opacity: 0.7; }
+
+    &:hover {
+      border-color: rgba(161,110,43,.55);
+      box-shadow: 0 0 0 3px rgba(161,110,43,.08);
+    }
   }
 
   &__top {
@@ -176,7 +185,7 @@
     &--done      { background: var(--status-success); }
     &--running   { background: var(--brand); animation: pulse-seg 1s ease-in-out infinite; }
     &--error     { background: var(--status-danger); }
-    &--cancelled { background: rgba(107,114,128,.35); }
+    &--cancelled { background: rgba(161,110,43,.5); }
   }
 }
 
@@ -193,6 +202,11 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;  // clips children, scroll handled by .trace
+
+  &--cancelled {
+    border-color: rgba(161,110,43,.35);
+    border-top: 3px solid rgba(161,110,43,.6);
+  }
 }
 
 // Empty state
@@ -488,15 +502,15 @@
 
   &--cancelled {
     .trace-step__dot {
-      background: var(--surface-2);
-      border-color: rgba(107,114,128,.4);
-      color: var(--text-muted);
+      background: rgba(161,110,43,.12);
+      border-color: rgba(161,110,43,.45);
+      color: #a16e2b;
     }
-    .trace-step__line { opacity: 0.3; }
-    .trace-step__label { color: var(--text-muted); text-decoration: line-through; opacity: 0.6; }
+    .trace-step__line { background: rgba(161,110,43,.2); }
+    .trace-step__label { color: var(--text-secondary); opacity: 0.7; }
     .trace-step__detail {
-      border-color: rgba(107,114,128,.2);
-      background: rgba(107,114,128,.04);
+      border-color: rgba(161,110,43,.2);
+      background: rgba(161,110,43,.04);
       color: var(--text-muted);
     }
   }
@@ -543,8 +557,8 @@
   }
 
   &--cancelled {
-    background: rgba(107,114,128,.06);
-    border-color: rgba(107,114,128,.25);
+    background: rgba(161,110,43,.06);
+    border-color: rgba(161,110,43,.3);
   }
 
   &__badge {
@@ -562,7 +576,7 @@
     &--draft-pr   { background: rgba(91,95,199,.15);  color: var(--brand); }
     &--escalated  { background: rgba(180,83,9,.15);   color: var(--status-warning); }
     &--error      { background: rgba(220,38,38,.15);  color: var(--status-danger); }
-    &--cancelled  { background: rgba(107,114,128,.15); color: var(--text-secondary); }
+    &--cancelled  { background: rgba(161,110,43,.15); color: #a16e2b; }
   }
 
   &__title {
@@ -961,15 +975,24 @@
 .cancelled-badge {
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.5px;
-  padding: 2px 7px;
+  letter-spacing: 0.6px;
+  padding: 3px 8px;
   border-radius: 4px;
-  background: rgba(107,114,128,.12);
-  color: var(--text-secondary);
-  border: 1px solid rgba(107,114,128,.35);
+  background: rgba(161,110,43,.12);
+  color: #a16e2b;
+  border: 1px solid rgba(161,110,43,.4);
   text-transform: uppercase;
   white-space: nowrap;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+
+  &::before {
+    content: '◼';
+    font-size: 7px;
+    opacity: 0.8;
+  }
 }
 
 // ── Run card repo name ────────────────────────────────────────────────────

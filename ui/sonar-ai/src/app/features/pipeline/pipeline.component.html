@@ -151,7 +151,7 @@
     </div>
 
     <!-- ── Detail pane ── -->
-    <div class="detail">
+    <div class="detail" [class.detail--cancelled]="selected()?.status === 'cancelled'">
 
       <!-- Empty state -->
       <div class="detail__empty" *ngIf="!selected()">
