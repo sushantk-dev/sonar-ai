@@ -50,6 +50,7 @@ class CriticOutput(TypedDict):
     """Output from LLM·3 (Critic)."""
     approved: bool
     concerns: list[str]
+    flagged_line_found_in_hunk: bool   # True if the patch modifies the flagged line
 
 
 class ValidationResult(TypedDict):

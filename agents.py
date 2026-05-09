@@ -907,6 +907,74 @@ def generate_fix(state: AgentState) -> AgentState:
 
 # ── LLM·3  Critic ─────────────────────────────────────────────────────────────
 
+def _check_patch_touches_flagged_line(
+    patch_hunks: str,
+    flagged_line: int,
+    tolerance: int = 3,
+) -> tuple[bool, str]:
+    """
+    Deterministic pre-check: parse the unified diff and verify that at least
+    one REMOVED ('-') line falls within `tolerance` lines of `flagged_line`.
+
+    Returns:
+        (True,  "")       — patch is correctly targeted
+        (False, reason)   — patch does not touch the flagged line
+
+    This check runs BEFORE the LLM Critic call so obviously mis-targeted
+    patches are rejected instantly without spending an LLM token.
+
+    Algorithm:
+      For each @@ hunk header, advance an old-file line counter through the
+      hunk body:
+        '-' lines  → candidate removed line; advance counter
+        ' ' lines  → context; advance counter
+        '+' lines  → new lines only; do NOT advance old-file counter
+      A hit is recorded when abs(current_old_line - flagged_line) <= tolerance.
+    """
+    if not patch_hunks or not patch_hunks.strip():
+        return False, "Patch is empty."
+
+    if flagged_line <= 0:
+        # No line number to check against — let the LLM decide.
+        return True, ""
+
+    hunk_re = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+    matches = list(hunk_re.finditer(patch_hunks))
+
+    if not matches:
+        return False, "Patch contains no valid @@ hunk headers."
+
+    for m in matches:
+        old_start = int(m.group(1))
+        # old_count = int(m.group(2) or 1)  # not used directly
+
+        # Slice out this hunk's body (up to the next hunk header or EOF)
+        body_start = m.end()
+        next_m = hunk_re.search(patch_hunks, body_start)
+        body = patch_hunks[body_start: next_m.start() if next_m else None]
+
+        current_old_line = old_start
+        for line in body.splitlines():
+            if not line:
+                current_old_line += 1
+                continue
+            prefix = line[0]
+            if prefix == "-":
+                if abs(current_old_line - flagged_line) <= tolerance:
+                    return True, ""
+                current_old_line += 1
+            elif prefix == "+":
+                pass  # '+' lines don't exist in the old file
+            else:
+                # context line (space) or other — advance old-file pointer
+                current_old_line += 1
+
+    return False, (
+        f"No removed line within ±{tolerance} lines of flagged line {flagged_line}. "
+        "The patch appears to target the wrong location."
+    )
+
+
 def critique_fix(state: AgentState) -> AgentState:
     """
     Adversarially review the generated patch.
@@ -920,12 +988,50 @@ def critique_fix(state: AgentState) -> AgentState:
           approved + concerns     →  0     (approved with notes, unchanged)
           rejected                → −0.15  (meaningful penalty)
         The adjusted value is clamped to [0, 1] and stored back in planner_output.
+
+    Iteration 4 changes:
+      - Deterministic pre-check (_check_patch_touches_flagged_line) runs BEFORE
+        the LLM call. Patches that don't touch within ±3 lines of the flagged
+        line are auto-rejected instantly, saving an LLM call.
+      - LLM prompt now requests `flagged_line_found_in_hunk` as an explicit
+        boolean field. If the LLM reports False, approved is forced to False
+        regardless of the LLM's own `approved` value, closing a loophole where
+        the LLM could silently approve a mis-targeted patch.
     """
     issue = state["current_issue"]
     generator_out = state.get("generator_output", {})
+    patch_hunks = generator_out.get("patch_hunks", "")
+    flagged_line: int = issue.get("line", 0)
 
     logger.info(f"[Critic] reviewing patch for rule={issue['rule_key']}")
 
+    # ── Deterministic gate ────────────────────────────────────────────────────
+    # Run BEFORE the LLM call — reject immediately if the patch obviously misses
+    # the flagged line. This is cheap (pure regex) and catches the most common
+    # failure mode: a plausible-looking diff that touches the wrong method/line.
+    det_ok, det_reason = _check_patch_touches_flagged_line(patch_hunks, flagged_line)
+    if not det_ok:
+        logger.warning(f"[Critic] Deterministic gate FAILED: {det_reason}")
+        parsed: CriticOutput = {
+            "approved": False,
+            "flagged_line_found_in_hunk": False,
+            "concerns": [f"[auto-rejected by deterministic check] {det_reason}"],
+        }
+        # Skip LLM call — still apply confidence penalty below.
+        approved = False
+        concern_count = len(parsed["concerns"])
+        planner_out = dict(state.get("planner_output", {}))
+        current_conf: float = float(planner_out.get("confidence", 0.5))
+        delta = -0.15
+        adjusted_conf = round(min(max(current_conf + delta, 0.0), 1.0), 3)
+        planner_out["confidence"] = adjusted_conf
+        logger.info(
+            f"[Critic] confidence adjusted: {current_conf:.3f} → {adjusted_conf:.3f} "
+            f"(delta={delta:+.2f}, auto-rejected, concerns={concern_count})"
+        )
+        return {**state, "critic_output": parsed, "planner_output": planner_out}
+
+    # ── LLM review ───────────────────────────────────────────────────────────
     changed_methods = generator_out.get("changed_methods", [])
 
     prompt_vars = {
@@ -933,9 +1039,9 @@ def critique_fix(state: AgentState) -> AgentState:
         "severity": issue["severity"],
         "message": issue["message"],
         "file_path": state.get("file_path", "unknown"),
-        "flagged_line": issue["line"],
+        "flagged_line": flagged_line,
         "method_context": state.get("method_context", ""),
-        "patch_hunks": generator_out.get("patch_hunks", ""),
+        "patch_hunks": patch_hunks,
         "changed_methods": ", ".join(changed_methods) if changed_methods else "unknown",
     }
 
@@ -952,9 +1058,27 @@ def critique_fix(state: AgentState) -> AgentState:
     parsed: CriticOutput = _parse_json_response(raw, "Critic")  # type: ignore[assignment]
     parsed.setdefault("approved", False)
     parsed.setdefault("concerns", [])
+    parsed.setdefault("flagged_line_found_in_hunk", True)   # safe default for old responses
+
+    # ── Safety override: if LLM says it didn't find the flagged line, force rejection ──
+    if not parsed.get("flagged_line_found_in_hunk", True):
+        if parsed.get("approved"):
+            logger.warning(
+                "[Critic] LLM reported flagged_line_found_in_hunk=false but approved=true "
+                "— overriding to rejected (line-targeting failure takes precedence)."
+            )
+            parsed["approved"] = False
+        if not any("flagged line" in c.lower() or "wrong location" in c.lower()
+                   for c in parsed["concerns"]):
+            parsed["concerns"].insert(
+                0,
+                f"Patch does not modify flagged line {flagged_line} "
+                "(flagged_line_found_in_hunk=false reported by LLM).",
+            )
 
     logger.info(
         f"[Critic] approved={parsed['approved']} "
+        f"flagged_line_found_in_hunk={parsed.get('flagged_line_found_in_hunk')} "
         f"concerns={len(parsed['concerns'])}"
     )
     if not parsed["approved"]:

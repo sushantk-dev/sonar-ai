@@ -163,19 +163,53 @@ generator_prompt = ChatPromptTemplate.from_messages([
 
 CRITIC_SYSTEM = _EXPERT_JAVA_ENGINEER + (
     "\n\nYour job is to ADVERSARIALLY REVIEW a proposed code patch for a SonarQube issue. "
-    "Check for:\n"
-    "- Correctness: does the diff actually fix the reported rule violation?\n"
-    "- Completeness: are there other occurrences of the same pattern in the context?\n"
-    "- Safety: could the patch introduce a regression, NPE, or new vulnerability?\n"
-    "- Validity: is the unified diff syntactically well-formed with correct line offsets?\n"
-    "- Style: does it match the surrounding code style (indentation, imports)?\n\n"
-    "Respond ONLY with a JSON object:\n"
+    "Work through the following steps IN ORDER before writing your verdict.\n\n"
+
+    "STEP 1 — LINE TARGETING (most important check)\n"
+    "  a. Note the flagged line number from the issue.\n"
+    "  b. Parse every @@ hunk header in the diff to find which old-file line numbers "
+    "     each hunk covers. A hunk starting at @@ -N,C @@ covers old lines N through N+C-1.\n"
+    "  c. Walk the hunk body line by line, tracking the current old-file line number: "
+    "     '-' lines and context lines advance the old-file counter; '+' lines do not.\n"
+    "  d. Set flagged_line_found_in_hunk=true ONLY if at least one '-' (removed) line "
+    "     falls within 3 lines of the flagged line number.\n"
+    "  e. If flagged_line_found_in_hunk=false, set approved=false and add the concern: "
+    "     'Patch does not modify the flagged line (line N) — wrong location targeted.'\n\n"
+
+    "STEP 2 — RULE SATISFACTION\n"
+    "  Confirm the removed '-' line(s) contain the exact pattern that triggers the rule "
+    "  (e.g. System.out.println for S106, string concatenation in logger for S2629). "
+    "  Confirm the added '+' line(s) eliminate that pattern without reintroducing it. "
+    "  If the rule still fires after the patch, set approved=false.\n\n"
+
+    "STEP 3 — COMPLETENESS\n"
+    "  Scan the full method context for OTHER occurrences of the same anti-pattern. "
+    "  If any exist and are not patched, add a concern (but this alone does not require "
+    "  approved=false unless the fix is clearly incomplete).\n\n"
+
+    "STEP 4 — SAFETY\n"
+    "  Would the change introduce a NullPointerException, resource leak, changed "
+    "  exception behaviour, or any regression in a non-error path? If so, add a concern "
+    "  and set approved=false.\n\n"
+
+    "STEP 5 — DIFF VALIDITY\n"
+    "  Verify the @@ offsets are consistent with the line numbers in the method context. "
+    "  Verify every '-' line matches the original source character-for-character. "
+    "  If either check fails, set approved=false.\n\n"
+
+    "STEP 6 — STYLE\n"
+    "  Does the patch preserve original indentation, brace style, and import ordering? "
+    "  Add a minor concern if not, but this alone does not require approved=false.\n\n"
+
+    "Respond ONLY with a JSON object — no markdown fences, no extra text:\n"
     "{{\n"
     '  "approved": <true|false>,\n'
-    '  "concerns": ["<concern 1>", "<concern 2>", ...]\n'
+    '  "flagged_line_found_in_hunk": <true|false>,\n'
+    '  "concerns": ["<specific concern 1>", ...]\n'
     "}}\n"
-    "If approved=true, concerns may be empty or contain minor notes. "
-    "If approved=false, concerns MUST explain exactly what is wrong."
+    "approved=false if ANY of steps 1, 2, 4, or 5 fail. "
+    "If approved=true, concerns may be empty or list minor notes. "
+    "If approved=false, every concern MUST be specific — name the exact line or pattern."
 )
 
 CRITIC_HUMAN = """\
@@ -184,9 +218,9 @@ CRITIC_HUMAN = """\
 - Severity: {severity}
 - Message:  {message}
 - File:     {file_path}
-- Line:     {flagged_line}
+- Flagged line: {flagged_line}  ← the patch MUST modify within ±3 lines of this
 
-## Original Method Context
+## Original Method Context (line numbers are exact)
 ```java
 {method_context}
 ```
@@ -199,7 +233,8 @@ CRITIC_HUMAN = """\
 ## Changed Methods Claimed
 {changed_methods}
 
-Review the patch and respond with your JSON verdict.
+Work through Steps 1–6 in order. Confirm whether the diff touches line {flagged_line}.
+Respond with your JSON verdict.
 """
 
 critic_prompt = ChatPromptTemplate.from_messages([
