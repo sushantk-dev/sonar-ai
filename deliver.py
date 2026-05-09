@@ -114,6 +114,31 @@ def deliver(state: AgentState) -> AgentState:
             logger.warning(f"[Deliver] Sonar rescan failed (non-fatal): {exc}")
             sonar_rescan_message = f"Rescan error: {exc}"
 
+    # ── Duplicate PR guard ────────────────────────────────────────────────────
+    # If a PR already exists for this branch (e.g. pipeline re-run on same report),
+    # return the existing URL instead of creating a duplicate.
+    try:
+        existing_pr_url = _find_existing_pr(state)
+    except Exception as exc:
+        logger.warning(f"[Deliver] Duplicate PR check failed (non-fatal): {exc}")
+        existing_pr_url = None
+
+    if existing_pr_url:
+        logger.info(f"[Deliver] PR already exists for branch — skipping creation: {existing_pr_url}")
+        outcome = "pr_opened" if confidence_label == "HIGH" else "draft_pr"
+        result = _make_issue_result(
+            issue, state, outcome, confidence_score,
+            pr_url=existing_pr_url, sonar_rescan_ok=sonar_rescan_ok
+        )
+        return {
+            **state,
+            "pr_url": existing_pr_url,
+            "sonar_rescan_ok": sonar_rescan_ok,
+            "sonar_rescan_message": sonar_rescan_message,
+            "done": True,
+            **_append_result(state, result),
+        }
+
     # Open the PR
     try:
         pr_url = _open_pr(
@@ -240,6 +265,54 @@ def _push_branch(state: AgentState) -> None:
 
 
 # ── GitHub PR ─────────────────────────────────────────────────────────────────
+
+def _find_existing_pr(state: AgentState) -> Optional[str]:
+    """
+    Check if an open or closed PR already exists for fix_branch on this repo.
+
+    Returns the PR html_url if found, None otherwise.
+
+    Prevents two scenarios:
+      1. Pipeline re-run on the same Sonar report creates a duplicate PR for
+         the same branch (branch name includes rule_key + issue_key, so it is
+         deterministic across runs for the same issue).
+      2. Parallel fan-out dispatching the same issue twice (edge-case in large
+         reports where issue deduplication is imperfect).
+
+    Closed/merged PRs are also matched so we never re-open already-delivered work.
+    """
+    fix_branch = state.get("fix_branch", "")
+    repo_url = state.get("repo_url", "")
+    if not fix_branch or not repo_url:
+        return None
+
+    gh = Github(settings.github_token, base_url=settings.github_base_url)
+    repo_name = _repo_name_from_url(repo_url)
+    gh_repo = gh.get_repo(repo_name)
+
+    owner = gh_repo.owner.login
+    head_filter = f"{owner}:{fix_branch}"
+
+    # Check open PRs first (most common case on re-run)
+    open_prs = list(gh_repo.get_pulls(state="open", head=head_filter))
+    if open_prs:
+        logger.info(
+            f"[Deliver] Found existing open PR #{open_prs[0].number} "
+            f"for branch '{fix_branch}': {open_prs[0].html_url}"
+        )
+        return open_prs[0].html_url
+
+    # Also check closed/merged so we don't re-open already-delivered work
+    closed_prs = list(gh_repo.get_pulls(state="closed", head=head_filter))
+    if closed_prs:
+        logger.info(
+            f"[Deliver] Branch '{fix_branch}' already has a closed/merged PR "
+            f"#{closed_prs[0].number} — treating as delivered: {closed_prs[0].html_url}"
+        )
+        return closed_prs[0].html_url
+
+    return None
+
 
 def _open_pr(
     state: AgentState,
