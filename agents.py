@@ -9,6 +9,13 @@ Iteration 2 changes:
   - plan_fix now passes rag_context (prior fix examples) to the Planner prompt.
   - retrieve_rag_context() is exposed as a standalone node for the graph to call
     before plan_fix, enabling pre-fetch of ChromaDB results.
+
+Resilience addition:
+  - All three LLM chain.invoke() calls are wrapped by _invoke_with_retry(), which
+    uses tenacity exponential backoff to survive transient Vertex AI 429/503 errors.
+    Retry budget: up to LLM_MAX_ATTEMPTS attempts, starting at LLM_RETRY_WAIT_MIN
+    seconds, doubling each time up to LLM_RETRY_WAIT_MAX seconds.
+    Non-retryable errors (auth, 400 bad request) are re-raised immediately.
 """
 
 from __future__ import annotations
@@ -20,11 +27,29 @@ from pathlib import Path
 from typing import Any
 
 from langchain_google_vertexai import ChatVertexAI
+from langchain_core.runnables import Runnable
 from loguru import logger
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+    RetryError,
+)
+import logging as _logging
 
 from config import settings
 from prompts import planner_prompt, generator_prompt, critic_prompt, format_rag_context
 from state import AgentState, PlannerOutput, GeneratorOutput, CriticOutput, RAGContext, SonarRuleDetail
+
+# ── Retry configuration ───────────────────────────────────────────────────────
+# Transient Vertex AI failures (rate limits, service unavailability) should be
+# retried automatically. Non-retryable errors (auth, malformed request) are
+# re-raised immediately so the node can fail fast and record a proper error.
+LLM_MAX_ATTEMPTS = 3
+LLM_RETRY_WAIT_MIN = 2    # seconds before first retry
+LLM_RETRY_WAIT_MAX = 30   # cap for exponential backoff
 
 
 # ── LLM factory ──────────────────────────────────────────────────────────────
@@ -38,6 +63,106 @@ def _make_llm(temperature: float = 0.2) -> ChatVertexAI:
         max_output_tokens=settings.max_tokens,
         temperature=temperature,
     )
+
+
+# ── Retry / backoff helper ────────────────────────────────────────────────────
+
+def _is_retryable(exc: BaseException) -> bool:
+    """
+    Return True for transient Vertex AI / gRPC errors that are safe to retry:
+      - HTTP 429  Too Many Requests  (quota exhaustion)
+      - HTTP 500  Internal Server Error
+      - HTTP 503  Service Unavailable
+      - gRPC RESOURCE_EXHAUSTED / UNAVAILABLE status codes
+
+    Return False for permanent errors that should fail immediately:
+      - HTTP 400  Bad Request  (malformed prompt / invalid parameter)
+      - HTTP 401 / 403  Authentication / Permission denied
+      - HTTP 404  Model not found
+
+    The google-cloud-aiplatform SDK raises google.api_core.exceptions.*
+    which all inherit from GoogleAPICallError and carry an http_status attribute.
+    """
+    # google.api_core exceptions  (preferred — most specific)
+    try:
+        from google.api_core import exceptions as _gae
+        if isinstance(exc, _gae.ResourceExhausted):   # 429
+            return True
+        if isinstance(exc, _gae.ServiceUnavailable):  # 503
+            return True
+        if isinstance(exc, _gae.InternalServerError): # 500
+            return True
+        if isinstance(exc, _gae.DeadlineExceeded):    # timeout
+            return True
+        # Any other GoogleAPICallError is non-retryable (auth, bad request, etc.)
+        if isinstance(exc, _gae.GoogleAPICallError):
+            return False
+    except ImportError:
+        pass
+
+    # Fallback: inspect the string representation for known transient patterns
+    msg = str(exc).lower()
+    transient_patterns = ("429", "503", "rate limit", "quota", "unavailable", "deadline")
+    fatal_patterns = ("401", "403", "permission", "unauthenticated", "invalid argument")
+    if any(p in msg for p in fatal_patterns):
+        return False
+    if any(p in msg for p in transient_patterns):
+        return True
+
+    # Default: retry unknown errors (fail-safe — a wasted retry is cheaper than
+    # aborting the whole issue on a one-off network glitch)
+    return True
+
+
+def _invoke_with_retry(chain: Runnable, prompt_vars: dict[str, Any], node_name: str) -> Any:
+    """
+    Call chain.invoke(prompt_vars) with exponential backoff retry.
+
+    Retry budget:
+      - Up to LLM_MAX_ATTEMPTS total attempts (1 original + retries).
+      - Wait 2 → 4 → 8 → … seconds between attempts, capped at LLM_RETRY_WAIT_MAX.
+      - Only retryable errors (429, 503, timeouts) trigger a retry.
+      - Non-retryable errors (auth, bad request) propagate immediately.
+
+    Args:
+        chain:       A LangChain Runnable (prompt | llm).
+        prompt_vars: Dict passed to chain.invoke().
+        node_name:   Human-readable name for log messages (e.g. "Planner").
+
+    Returns:
+        The raw response object from chain.invoke().
+
+    Raises:
+        The last exception if all attempts are exhausted, or immediately on
+        non-retryable errors.
+    """
+    attempt = 0
+
+    @retry(
+        retry=retry_if_exception(_is_retryable),
+        stop=stop_after_attempt(LLM_MAX_ATTEMPTS),
+        wait=wait_exponential(multiplier=1, min=LLM_RETRY_WAIT_MIN, max=LLM_RETRY_WAIT_MAX),
+        before_sleep=before_sleep_log(_logging.getLogger("tenacity"), _logging.WARNING),
+        reraise=True,
+    )
+    def _attempt() -> Any:
+        nonlocal attempt
+        attempt += 1
+        if attempt > 1:
+            logger.warning(
+                f"[{node_name}] LLM retry attempt {attempt}/{LLM_MAX_ATTEMPTS}"
+            )
+        return chain.invoke(prompt_vars)
+
+    try:
+        return _attempt()
+    except RetryError as exc:
+        # tenacity exhausted all attempts — unwrap and re-raise the original error
+        logger.error(
+            f"[{node_name}] All {LLM_MAX_ATTEMPTS} LLM attempts failed. "
+            f"Last error: {exc.last_attempt.exception()}"
+        )
+        raise exc.last_attempt.exception() from exc
 
 
 # ── JSON parsing helper ───────────────────────────────────────────────────────
@@ -358,7 +483,7 @@ def plan_fix(state: AgentState) -> AgentState:
     }
 
     t0 = time.time()
-    response = chain.invoke(prompt_vars)
+    response = _invoke_with_retry(chain, prompt_vars, "Planner")
     elapsed = time.time() - t0
 
     raw = response.content if hasattr(response, "content") else str(response)
@@ -498,7 +623,7 @@ def generate_fix(state: AgentState) -> AgentState:
     }
 
     t0 = time.time()
-    response = chain.invoke(prompt_vars)
+    response = _invoke_with_retry(chain, prompt_vars, "Generator")
     elapsed = time.time() - t0
 
     raw = response.content if hasattr(response, "content") else str(response)
@@ -554,7 +679,7 @@ def critique_fix(state: AgentState) -> AgentState:
     }
 
     t0 = time.time()
-    response = chain.invoke(prompt_vars)
+    response = _invoke_with_retry(chain, prompt_vars, "Critic")
     elapsed = time.time() - t0
 
     raw = response.content if hasattr(response, "content") else str(response)

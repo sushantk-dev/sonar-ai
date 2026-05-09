@@ -9,6 +9,7 @@ javalang>=0.13
 pygithub>=2.3
 pydantic-settings>=2.5
 loguru
+tenacity>=8.2          # Exponential backoff for LLM call retries (429/503 resilience)
  
 # Iteration 2 additions
 chromadb>=0.5           # Vector store for RAG prior fix retrieval
