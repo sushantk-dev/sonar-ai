@@ -484,7 +484,7 @@ def generate_fix(state: AgentState) -> AgentState:
     except ValueError:
         rel_path = Path(abs_path).name
 
-    full_file_context = _numbered_file(abs_path)
+    full_file_context = _numbered_file(abs_path, flagged_line=issue.get("line", 0))
 
     prompt_vars = {
         "rule_key": issue["rule_key"],
@@ -577,26 +577,130 @@ def critique_fix(state: AgentState) -> AgentState:
 
 # ── File helpers ──────────────────────────────────────────────────────────────
 
-def _numbered_file(file_path: str, max_lines: int = 300) -> str:
+def _numbered_file(file_path: str, max_lines: int = 300, flagged_line: int = 0) -> str:
     """
-    Return the full file content with 1-based line numbers prepended.
-    Capped at max_lines to stay within context limits.
+    Return file content with 1-based line numbers prepended, capped at max_lines.
+
+    Truncation strategy (when file exceeds max_lines):
+      The flagged line is ALWAYS included in the output. The budget is split into
+      three regions so the LLM always sees the code it needs to modify:
+
+        1. HEAD   — up to 40 lines from the top of the file (imports, class declaration)
+        2. WINDOW — ±context_radius lines centred on the flagged line (the fix target)
+        3. TAIL   — up to 20 lines from the bottom (closing braces, useful for structure)
+
+      Regions are de-duplicated and presented in file order with gap markers so the
+      LLM knows lines were omitted and doesn't confuse omitted line numbers.
+
+      If flagged_line is 0 or not provided, falls back to the old head+tail strategy
+      (safe for callers that don't have a line number, e.g. Critic node).
+
+    Previous bug: head=150 + tail=50 always omitted the middle of large files.
+    A 600-line file with a flagged line at line 300 would never show that line.
     """
     if not file_path:
         return ""
     try:
         lines = Path(file_path).read_text(encoding="utf-8", errors="replace").splitlines()
-        if len(lines) > max_lines:
-            head = lines[:150]
-            tail = lines[-50:]
-            gap = len(lines) - 200
+        total = len(lines)
+        header = f"// {Path(file_path).name} — {total} lines total\n"
+
+        if total <= max_lines:
+            # File fits entirely — number and return everything
+            numbered = "\n".join(f"{i+1:4d}  {l}" for i, l in enumerate(lines))
+            return header + numbered
+
+        # ── Truncation: build three regions centred on the flagged line ────────
+        if flagged_line > 0:
+            # Budget allocation out of max_lines:
+            head_budget   = 40                        # imports + class declaration
+            tail_budget   = 20                        # closing structure
+            window_budget = max_lines - head_budget - tail_budget  # ~240 for default 300
+
+            context_radius = window_budget // 2      # lines before AND after flagged line
+
+            # Region 1: head (0-based indices)
+            head_end = min(head_budget, total)        # exclusive
+
+            # Region 2: window centred on flagged line (convert to 0-based)
+            fl0 = flagged_line - 1                    # 0-based flagged line index
+            win_start = max(0, fl0 - context_radius)
+            win_end   = min(total, fl0 + context_radius + 1)
+
+            # Expand window if we have budget left (flagged line near top/bottom)
+            used = (win_end - win_start)
+            spare = window_budget - used
+            if spare > 0:
+                # Grow toward whichever end has more room
+                extra_before = min(spare // 2, win_start)
+                extra_after  = min(spare - extra_before, total - win_end)
+                win_start -= extra_before
+                win_end   += extra_after
+
+            # Region 3: tail
+            tail_start = max(total - tail_budget, 0)  # 0-based
+
+            # Merge overlapping / adjacent regions in file order
+            # Each region is (start_0based, end_0based_exclusive)
+            regions = _merge_regions([
+                (0,          head_end),
+                (win_start,  win_end),
+                (tail_start, total),
+            ], total)
+
+            # Render with gap markers between non-contiguous regions
+            parts: list[str] = []
+            prev_end = 0
+            for r_start, r_end in regions:
+                if r_start > prev_end:
+                    omitted = r_start - prev_end
+                    parts.append(f"     ... ({omitted} lines omitted) ...")
+                parts.append(
+                    "\n".join(f"{r_start + i + 1:4d}  {lines[r_start + i]}"
+                               for i in range(r_end - r_start))
+                )
+                prev_end = r_end
+
+            if prev_end < total:
+                parts.append(f"     ... ({total - prev_end} lines omitted) ...")
+
+            numbered = "\n".join(parts)
+
+        else:
+            # No flagged_line provided — simple head + tail (safe fallback)
+            head_n = max_lines - 50
+            head   = lines[:head_n]
+            tail   = lines[-50:]
+            gap    = total - head_n - 50
             numbered = (
                 "\n".join(f"{i+1:4d}  {l}" for i, l in enumerate(head))
-                + f"\n... ({gap} lines omitted) ...\n"
-                + "\n".join(f"{len(lines)-49+i:4d}  {l}" for i, l in enumerate(tail))
+                + f"\n     ... ({gap} lines omitted) ...\n"
+                + "\n".join(f"{total - 49 + i:4d}  {l}" for i, l in enumerate(tail))
             )
-        else:
-            numbered = "\n".join(f"{i+1:4d}  {l}" for i, l in enumerate(lines))
-        return f"// {Path(file_path).name} — {len(lines)} lines total\n" + numbered
+
+        return header + numbered
+
     except OSError:
         return ""
+
+
+def _merge_regions(
+    regions: list[tuple[int, int]], total_lines: int
+) -> list[tuple[int, int]]:
+    """
+    Merge a list of (start, end) 0-based half-open intervals into a sorted,
+    non-overlapping list. Adjacent regions (gap == 0 or 1) are merged so we
+    don't emit a "1 line omitted" gap marker for a single omitted blank line.
+    """
+    # Clamp to valid range
+    clamped = [(max(0, s), min(total_lines, e)) for s, e in regions if s < e]
+    sorted_regions = sorted(clamped, key=lambda r: r[0])
+
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted_regions:
+        if merged and start <= merged[-1][1] + 1:   # overlapping or adjacent
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    return merged
