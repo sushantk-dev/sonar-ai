@@ -104,10 +104,11 @@ export class PipelineStateService {
 
     this.api.startRun(req).subscribe({
       next: ({ run_id }) => this._pollRun(run_id, req),
-      error: (err: Error) => {
-        this.error.set(err.message);
-        this.running.set(false);
-      },
+	error: (err: any) => {
+  	const detail = err?.error?.detail ?? err?.message ?? 'Pipeline start failed';
+  	this.error.set(detail);
+  	this.running.set(false);
+	},
     });
   }
 
