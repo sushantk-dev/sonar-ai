@@ -539,24 +539,6 @@ def _build_pr_body(
 
 ---
 
-## 📸 Before / After
-
-<details>
-<summary>Before (around line {issue['line']})</summary>
-
-{before_block}
-
-</details>
-
-<details>
-<summary>After (around line {issue['line']})</summary>
-
-{after_block}
-
-</details>
-
----
-
 ## 📄 Full Patch
 ```diff
 {patch}
