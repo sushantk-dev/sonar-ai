@@ -115,7 +115,7 @@ class Settings(BaseSettings):
         description="Max concurrent issue pipelines when parallel_issues=True",
     )
     max_issues: int = Field(
-        default=0,
+        default=1,
         description="Max issues to process per run (0 = no limit)",
     )
 
