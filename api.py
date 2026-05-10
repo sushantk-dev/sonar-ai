@@ -62,6 +62,7 @@ class PipelineRunRequest(BaseModel):
     rescan:     bool = False
     no_rag:     bool = False
     dry_run:    bool = False
+    severities: str  = "BLOCKER,CRITICAL,MAJOR,MINOR,INFO"   # ← NEW
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -205,6 +206,7 @@ def _pipeline_worker(
             repo_url=req_dict["repo_url"],
             commit_sha=commit_sha,
             max_issues=req_dict.get("max_issues", 0),
+            severities=req_dict.get("severities", "BLOCKER,CRITICAL,MAJOR,MINOR,INFO"),  # ← NEW
         )
         elapsed_ms = int((time.time() - t0) * 1000)
 
@@ -642,7 +644,10 @@ def start_run(req: PipelineRunRequest) -> dict:
     _runs[run_id]["_queue"] = q
     _runs[run_id]["status"] = "running"
 
-    logger.info(f"[API] Started pipeline worker PID={proc.pid} run_id={run_id}")
+    logger.info(
+        f"[API] Started pipeline worker PID={proc.pid} run_id={run_id} "
+        f"sev={req.severities}"
+    )
     return {"run_id": run_id, "status": "running"}
 
 

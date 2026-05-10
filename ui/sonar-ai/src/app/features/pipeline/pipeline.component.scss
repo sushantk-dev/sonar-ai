@@ -1069,3 +1069,74 @@
     color: var(--brand);
   }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   ADD THESE BLOCKS TO pipeline.component.scss
+   (place after the existing .run-form__flags block)
+   ───────────────────────────────────────────────────────────── */
+ 
+/* Severity selector row */
+.run-form__sev-row {
+  display:     flex;
+  align-items: center;
+  gap:         10px;
+  padding:     10px 0 4px;
+  flex-wrap:   wrap;
+}
+ 
+.run-form__sev-label {
+  font-size:   11px;
+  font-weight: 600;
+  color:       var(--text-muted, #6b7280);
+  white-space: nowrap;
+  min-width:   96px;        /* aligns with the flags label width */
+}
+ 
+.run-form__sev-hint {
+  font-size: 11px;
+  color:     var(--text-muted, #6b7280);
+  margin-left: auto;
+}
+ 
+/* Pill group */
+.sev-picker {
+  display: flex;
+  gap:     6px;
+  flex-wrap: wrap;
+}
+ 
+.sev-pill {
+  /* base — unselected (dimmed) */
+  padding:       3px 10px;
+  border-radius: 99px;
+  font-size:     11px;
+  font-weight:   600;
+  letter-spacing: .04em;
+  cursor:        pointer;
+  border:        1.5px solid transparent;
+  opacity:       0.35;
+  transition:    opacity .15s, border-color .15s, background .15s;
+  background:    transparent;
+  color:         var(--text-primary, #e2e8f0);
+ 
+  &:hover { opacity: 0.6; }
+ 
+  /* selected state — full colour */
+  &.sev-pill--on {
+    opacity: 1;
+  }
+ 
+  /* severity colour rules — selected */
+  &.sev-pill--blocker.sev-pill--on  { background: #7f1d1d; border-color: #ef4444; color: #fca5a5; }
+  &.sev-pill--critical.sev-pill--on { background: #431407; border-color: #f97316; color: #fdba74; }
+  &.sev-pill--major.sev-pill--on    { background: #422006; border-color: #eab308; color: #fde047; }
+  &.sev-pill--minor.sev-pill--on    { background: #1a2e05; border-color: #84cc16; color: #bef264; }
+  &.sev-pill--info.sev-pill--on     { background: #0c1a2e; border-color: #3b82f6; color: #93c5fd; }
+ 
+  /* severity colour rules — unselected (just a coloured border hint) */
+  &.sev-pill--blocker  { border-color: #ef4444; }
+  &.sev-pill--critical { border-color: #f97316; }
+  &.sev-pill--major    { border-color: #eab308; }
+  &.sev-pill--minor    { border-color: #84cc16; }
+  &.sev-pill--info     { border-color: #3b82f6; }
+}

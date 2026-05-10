@@ -44,7 +44,21 @@ def node_ingest(state: AgentState) -> AgentState:
     issues = parse_sonar_report(state["sonar_report_path"])
     rule_kb = load_rule_kb()
 
-    # Apply max_issues cap
+    # ── Apply severity filter ─────────────────────────────────────────────────
+    # state["severities"] is guaranteed to exist because run_pipeline always
+    # sets it in initial_state. AgentState now declares it as a typed field.
+    sev_filter = state.get("severities", "").strip()
+    if sev_filter:
+        allowed_sevs = {s.strip().upper() for s in sev_filter.split(",") if s.strip()}
+        before_count = len(issues)
+        issues = [i for i in issues if i.get("severity", "").upper() in allowed_sevs]
+        logger.info(
+            f"[Ingest] Severity filter '{sev_filter}': "
+            f"{before_count} → {len(issues)} issues remaining"
+        )
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Apply max_issues cap (applied after severity filter)
     max_issues = state.get("max_issues", settings.max_issues)
     if max_issues and max_issues > 0 and len(issues) > max_issues:
         logger.info(f"[Ingest] Capping at {max_issues} issues (from {len(issues)} total)")
@@ -474,6 +488,7 @@ def run_pipeline(
     repo_url: str,
     commit_sha: str,
     max_issues: int = 0,
+    severities: str = "BLOCKER,CRITICAL,MAJOR,MINOR,INFO",   # ← NEW
 ) -> AgentState:
     """
     Run the full SonarAI pipeline for all issues in the report.
@@ -483,6 +498,8 @@ def run_pipeline(
         repo_url:          GitHub HTTPS clone URL
         commit_sha:        Exact commit SHA used during the Sonar scan
         max_issues:        Cap on issues to process (0 = no limit)
+        severities:        Comma-separated severities to fix,
+                           e.g. "BLOCKER,CRITICAL" — defaults to all five
 
     Returns:
         Final AgentState after the pipeline completes.
@@ -497,18 +514,20 @@ def run_pipeline(
         "repo_url": repo_url,
         "commit_sha": commit_sha,
         "max_issues": max_issues or settings.max_issues,
+        "severities": severities or "BLOCKER,CRITICAL,MAJOR,MINOR,INFO",   # ← NEW
         "pipeline_results": [],
         "errors": [],
     }
 
     logger.info("=" * 60)
     logger.info("SonarAI pipeline starting (Iteration 2)")
-    logger.info(f"  report  : {sonar_report_path}")
-    logger.info(f"  repo    : {repo_url}")
-    logger.info(f"  commit  : {commit_sha}")
-    logger.info(f"  parallel: {settings.parallel_issues}")
-    logger.info(f"  rag     : {settings.enable_rag}")
-    logger.info(f"  rescan  : {settings.enable_sonar_rescan}")
+    logger.info(f"  report     : {sonar_report_path}")
+    logger.info(f"  repo       : {repo_url}")
+    logger.info(f"  commit     : {commit_sha}")
+    logger.info(f"  severities : {severities}")              # ← NEW
+    logger.info(f"  parallel   : {settings.parallel_issues}")
+    logger.info(f"  rag        : {settings.enable_rag}")
+    logger.info(f"  rescan     : {settings.enable_sonar_rescan}")
     logger.info("=" * 60)
 
     try:

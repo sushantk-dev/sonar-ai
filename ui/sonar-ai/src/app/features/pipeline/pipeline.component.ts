@@ -18,15 +18,23 @@ import { ActiveStepPipe }  from '../../shared/active-step.pipe';
 export class PipelineComponent {
   state = inject(PipelineStateService);
 
+  // ── Severity options (in priority order) ─────────────────────────────────
+  readonly SEV_OPTIONS = ['BLOCKER', 'CRITICAL', 'MAJOR', 'MINOR', 'INFO'] as const;
+
   // ── Run form signals ──────────────────────────────────────────────────────
-  repoUrl   = signal('https://github.com/org/repo.git');
-  commitSha = signal('HEAD');
-  maxIssues = signal(0);
-  parallel  = signal(false);
-  rescan    = signal(false);
-  noRag     = signal(false);
-  dryRun    = signal(false);
-  showForm  = signal(false);
+  repoUrl      = signal('https://github.com/org/repo.git');
+  commitSha    = signal('HEAD');
+  maxIssues    = signal(0);
+  parallel     = signal(false);
+  rescan       = signal(false);
+  noRag        = signal(false);
+  dryRun       = signal(false);
+  showForm     = signal(false);
+
+  // ── Severity multi-select — all enabled by default ────────────────────────
+  selectedSevs = signal<Set<string>>(
+    new Set(['BLOCKER', 'CRITICAL', 'MAJOR', 'MINOR', 'INFO'])
+  );
 
   // ── Input viewer ──────────────────────────────────────────────────────────
   showInput = signal(false);   // toggles the input panel in detail pane
@@ -49,6 +57,32 @@ export class PipelineComponent {
   outcomeIcon(o?: string)  { return this.state.outcomeIcon(o); }
   outcomeTitle(o?: string) { return this.state.outcomeTitle(o); }
 
+  // ── Severity toggle ───────────────────────────────────────────────────────
+  toggleSev(s: string) {
+    this.selectedSevs.update(set => {
+      const next = new Set(set);
+      if (next.has(s)) {
+        // Prevent deselecting all — keep at least one active
+        if (next.size > 1) next.delete(s);
+      } else {
+        next.add(s);
+      }
+      return next;
+    });
+  }
+
+  isSevSelected(s: string): boolean {
+    return this.selectedSevs().has(s);
+  }
+
+  /** Comma-separated string of currently selected severities in priority order. */
+  private _severitiesString(): string {
+    return this.SEV_OPTIONS
+      .filter(s => this.selectedSevs().has(s))
+      .join(',');
+  }
+
+  // ── Start ─────────────────────────────────────────────────────────────────
   startRun() {
     this.showForm.set(false);
     this.state.startRun({
@@ -59,6 +93,7 @@ export class PipelineComponent {
       rescan:     this.rescan(),
       no_rag:     this.noRag(),
       dry_run:    this.dryRun(),
+      severities: this._severitiesString(),   // ← NEW
     });
   }
 
@@ -76,6 +111,12 @@ export class PipelineComponent {
     this.noRag.set(req.no_rag);
     this.dryRun.set(req.dry_run);
 
+    // ← NEW: restore severity selection from the saved request
+    if (req.severities) {
+      const saved = new Set(req.severities.split(',').map(s => s.trim().toUpperCase()));
+      this.selectedSevs.set(saved);
+    }
+
     // Start immediately with the same request
     this.state.startRun(req);
   }
@@ -88,5 +129,12 @@ export class PipelineComponent {
       { label: 'No RAG',   on: req.no_rag   },
       { label: 'Dry Run',  on: req.dry_run  },
     ];
+  }
+
+  /** Display label for saved severities — "ALL" when all 5 are selected. */
+  sevLabel(req: RunRequest): string {
+    if (!req.severities) return 'ALL';
+    const parts = req.severities.split(',').map(s => s.trim()).filter(Boolean);
+    return parts.length === 5 ? 'ALL' : parts.join(', ');
   }
 }

@@ -14,6 +14,7 @@ export interface RunRequest {
   rescan:     boolean;
   no_rag:     boolean;
   dry_run:    boolean;
+  severities: string;   // ← NEW: comma-separated e.g. "BLOCKER,CRITICAL"
 }
 
 export interface UiRun {

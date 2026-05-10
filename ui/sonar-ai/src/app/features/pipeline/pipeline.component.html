@@ -55,6 +55,31 @@
                min="0" placeholder="0 = all">
       </div>
     </div>
+
+    <!-- ── NEW: Severity selector ── -->
+    <div class="run-form__sev-row">
+      <span class="run-form__sev-label">Fix Severities</span>
+      <div class="sev-picker">
+        <button
+          *ngFor="let s of SEV_OPTIONS"
+          type="button"
+          class="sev-pill"
+          [class.sev-pill--on]="isSevSelected(s)"
+          [class.sev-pill--blocker]="s === 'BLOCKER'"
+          [class.sev-pill--critical]="s === 'CRITICAL'"
+          [class.sev-pill--major]="s === 'MAJOR'"
+          [class.sev-pill--minor]="s === 'MINOR'"
+          [class.sev-pill--info]="s === 'INFO'"
+          (click)="toggleSev(s)"
+          [title]="isSevSelected(s) ? 'Click to exclude ' + s : 'Click to include ' + s">
+          {{ s }}
+        </button>
+      </div>
+      <span class="run-form__sev-hint">
+        {{ selectedSevs().size === 5 ? 'All severities' : selectedSevs().size + ' selected' }}
+      </span>
+    </div>
+
     <div class="run-form__flags">
       <label class="flag-toggle" [class.flag-toggle--on]="parallel()">
         <input type="checkbox" [checked]="parallel()"
@@ -237,6 +262,11 @@
             <div class="input-field">
               <span class="input-field__key">max_issues</span>
               <span class="input-field__val">{{ run.request.max_issues || '0 (all)' }}</span>
+            </div>
+            <!-- ── NEW: severities row ── -->
+            <div class="input-field">
+              <span class="input-field__key">severities</span>
+              <span class="input-field__val">{{ sevLabel(run.request) }}</span>
             </div>
             <div class="input-field input-field--flags">
               <span class="input-field__key">flags</span>

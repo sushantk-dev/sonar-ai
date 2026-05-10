@@ -13,6 +13,10 @@ Iteration 3 additions:
   - method_start_line  : 1-based line number of the first line in method_context,
                          used as an anchor in the Generator prompt so the LLM can
                          compute correct @@ offsets without guessing.
+
+Iteration 4 additions:
+  - severities         : comma-separated severity filter passed from the UI
+                         e.g. "BLOCKER,CRITICAL" — applied in node_ingest
 """
 
 from __future__ import annotations
@@ -108,6 +112,10 @@ class AgentState(TypedDict, total=False):
     sonar_report_path: str          # Path to sonar-report.json
     repo_url: str                   # GitHub clone URL
     commit_sha: str                 # Exact commit SHA from Sonar scan
+
+    # ── Severity filter (Iteration 4) ────────────────────────────────────────
+    severities: str                 # Comma-separated e.g. "BLOCKER,CRITICAL,MAJOR"
+                                    # Applied in node_ingest before any processing
 
     # ── Parsed issues ─────────────────────────────────────────────────────────
     issues: list[SonarIssue]        # All parsed, filtered, sorted issues
