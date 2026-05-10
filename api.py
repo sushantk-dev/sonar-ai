@@ -619,7 +619,7 @@ def get_structured_report() -> dict:
 def start_run(req: PipelineRunRequest) -> dict:
     report_path = str(Path(__file__).parent / "uploads" / "sonar-ai-last-report.json")
     if not Path(report_path).exists():
-        raise HTTPException(400, "No report uploaded yet. POST /api/report/upload first.")
+        raise HTTPException(400, "No sonar report uploaded yet.")
 
     run_id = str(uuid.uuid4())
     _runs[run_id] = {
