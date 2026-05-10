@@ -113,7 +113,6 @@
                        [value]="cfg.maxIssues"
                        (input)="patch('maxIssues', +$any($event.target).value)"
                        min="1" max="200">
-                <span class="field__hint">0 = no limit</span>
               </div>
               <div class="field">
                 <label class="field__label">Max LLM Tokens</label>

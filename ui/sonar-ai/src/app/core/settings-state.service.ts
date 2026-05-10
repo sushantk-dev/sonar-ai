@@ -52,7 +52,7 @@ export class SettingsStateService {
     gcpProject:     '',
     gcpLocation:    'us-central1',
     model:          'gemini-2.5-flash',
-    maxIssues:      0,
+    maxIssues:      1,
     maxTokens:      8192,
     highThresh:     0.80,
     medThresh:      0.50,
