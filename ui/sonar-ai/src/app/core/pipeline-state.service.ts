@@ -14,7 +14,7 @@ export interface RunRequest {
   rescan:     boolean;
   no_rag:     boolean;
   dry_run:    boolean;
-  severities: string;   // ← NEW: comma-separated e.g. "BLOCKER,CRITICAL"
+  severities: string;
 }
 
 export interface UiRun {
@@ -187,11 +187,15 @@ export class PipelineStateService {
         this.error.set(status.error);
       }
 
-      // No issues in the report — auto-remove placeholder after 4 s
+      // ── REMOVED: auto-delete on no results ───────────────────────────────
+      // Previously this block deleted the run card after 4 s when no issues
+      // were found. Now we keep it in history permanently with outcome='empty'
+      // so users have a full record of every pipeline run.
+      // The error banner still surfaces the message; the card stays in the list.
       const noResults = !status.results || status.results.length === 0;
       if (noResults && status.status === 'done') {
-        this.error.set('No issues found in the report — nothing to process.');
-        setTimeout(() => this.deleteRun(runId), 4000);
+        this.error.set('No issues found for the selected severity — run is kept in history.');
+        // ← no deleteRun() call; card persists with status='empty'
         return;
       }
 
@@ -222,7 +226,7 @@ export class PipelineStateService {
     if (newCards[0]) this.selected.set(newCards[0]);
   }
 
-  // ── Delete a finished run card ────────────────────────────────────────────
+  // ── Delete a finished run card (manual only) ──────────────────────────────
   deleteRun(id: string) {
     // Don't delete actively running run
     if (id === this._activeRunId) return;
