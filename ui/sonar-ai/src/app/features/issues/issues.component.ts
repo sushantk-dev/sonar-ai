@@ -21,6 +21,9 @@ export class IssuesComponent {
   // Singleton — state survives tab navigation
   st  = inject(IssuesStateService);
   svc = inject(DataService);
+  
+// Live SonarQube fetch
+  sonarComponentKey = '';
 
   drawer: SonarIssue | null = null;
   get kb() { return this.drawer ? this.svc.getRuleKb(this.drawer.ruleKey) : null; }
@@ -64,10 +67,8 @@ export class IssuesComponent {
     if (!file) return;
     this.st.onImport(file);
     input.value = '';
+    this.sonarComponentKey = '';
   }
-
-  // Live SonarQube fetch
-  sonarComponentKey = '';
 
   fetchFromSonar() {
     this.st.fetchFromSonar(this.sonarComponentKey);
