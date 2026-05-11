@@ -179,6 +179,10 @@ export class ApiService {
     return this.http.post<any>(`${this.base}/api/pipeline/cancel/${runId}`, {});
   }
 
+  deleteRun(runId: string): Observable<{ message: string }> {
+    return this.http.delete<any>(`${this.base}/api/pipeline/runs/${runId}`);
+  }
+
   listRuns(): Observable<{ runs: any[] }> {
     return this.http.get<any>(`${this.base}/api/pipeline/runs`);
   }

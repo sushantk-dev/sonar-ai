@@ -9,7 +9,6 @@ Endpoints:
     POST /api/pipeline/run          — start a pipeline run
     POST /api/pipeline/cancel/{id}  — hard-kill a running run
     GET  /api/pipeline/status/{id}  — poll run status + live step events
-    GET  /api/pipeline/runs         — list all runs with full data for UI rehydration
     GET  /api/issues                — list issues from the last loaded report
     DELETE /api/issues/{key}        — remove one issue
     POST /api/report/upload         — upload a sonar-report.json
@@ -63,7 +62,7 @@ class PipelineRunRequest(BaseModel):
     rescan:     bool = False
     no_rag:     bool = False
     dry_run:    bool = False
-    severities: str  = "BLOCKER,CRITICAL,MAJOR,MINOR,INFO"
+    severities: str  = "BLOCKER,CRITICAL,MAJOR,MINOR,INFO"   # ← NEW
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -119,38 +118,57 @@ def _pipeline_worker(
 
     step_labels = ["Ingest","Load Repo","RAG Fetch","Rule Fetch",
                    "Planner","Generator","Critic","Validate","Deliver"]
-
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent))
+    for label in step_labels:
+        push(label, "pending")
 
     try:
-        from loguru import logger as _log
+        # Apply env overrides
+        if req_dict.get("dry_run"):
+            os.environ["SONAR_AI_DRY_RUN"] = "1"
+        if req_dict.get("parallel"):
+            os.environ["PARALLEL_ISSUES"] = "true"
+        if req_dict.get("rescan"):
+            os.environ["ENABLE_SONAR_RESCAN"] = "true"
+        if req_dict.get("no_rag"):
+            os.environ["ENABLE_RAG"] = "false"
+
         from graph import run_pipeline
+        from loguru import logger as _log
 
-        # Initialise all steps as pending so the UI shows the full list immediately
-        for label in step_labels:
-            event_queue.put({"type": "step", "label": label,
-                             "status": "pending", "detail": "", "ms": 0})
-
-        # Intercept loguru INFO so we can push detail strings per step
+        # Intercept loguru INFO to drive step state
         _orig_info = _log.info
 
-        def _push_detail(step_label: str, msg: str, prefix: str) -> None:
-            detail = msg.replace(prefix, "").strip(" :]")
-            event_queue.put({"type": "step", "label": step_label,
-                             "status": "running", "detail": detail, "ms": 0})
+        # Per-step detail accumulator — appends lines instead of overwriting
+        _step_details: dict[str, list[str]] = {label: [] for label in step_labels}
 
-        def _intercepting_info(msg: str, *args, **kwargs) -> None:
-            _orig_info(msg, *args, **kwargs)
-            if   "[Ingest]"    in msg: _push_detail("Ingest",    msg, "[Ingest]")
-            elif "[RepoLoad]"  in msg: _push_detail("Load Repo", msg, "[RepoLoad]")
-            elif "[RAG]"       in msg: _push_detail("RAG Fetch", msg, "[RAG]")
-            elif "[RuleFetch]" in msg: _push_detail("Rule Fetch",msg, "[RuleFetch]")
-            elif "[Planner]"   in msg: _push_detail("Planner",   msg, "[Planner]")
-            elif "[Generator]" in msg: _push_detail("Generator", msg, "[Generator]")
-            elif "[Critic]"    in msg: _push_detail("Critic",    msg, "[Critic]")
-            elif "[Validator]" in msg: _push_detail("Validate",  msg, "[Validator]")
-            elif "[Deliver]"   in msg: _push_detail("Deliver",   msg, "[Deliver]")
+        def _clean(msg: str, prefix: str) -> str:
+            """Strip the [Tag] prefix and leading whitespace to get human-readable detail."""
+            import re as _re
+            # Remove leading [Tag] bracket token
+            cleaned = _re.sub(r"^\[" + _re.escape(prefix.strip("[]")) + r"\]\s*", "", msg).strip()
+            return cleaned or msg.strip()
+
+        def _push_detail(label: str, msg: str, tag: str) -> None:
+            """Accumulate detail lines for a step and push the joined result."""
+            line = _clean(msg, tag)
+            if line and (not _step_details[label] or _step_details[label][-1] != line):
+                _step_details[label].append(line)
+            # Keep only last 3 lines to avoid overflow
+            detail = " · ".join(_step_details[label][-3:])
+            push(label, "running", detail)
+
+        def _intercepting_info(msg: str, *a, **kw):  # type: ignore[misc]
+            _orig_info(msg, *a, **kw)
+            m = str(msg)
+            if   "[Ingest]"    in m: _push_detail("Ingest",     m, "[Ingest]")
+            elif "[LoadRepo]"  in m: _push_detail("Load Repo",  m, "[LoadRepo]")
+            elif "[RAG]"       in m: _push_detail("RAG Fetch",  m, "[RAG]")
+            elif "[RuleFetch]" in m: _push_detail("Rule Fetch", m, "[RuleFetch]")
+            elif "[Planner]"   in m: _push_detail("Planner",    m, "[Planner]")
+            elif "[Generator]" in m: _push_detail("Generator",  m, "[Generator]")
+            elif "[Critic]"    in m: _push_detail("Critic",     m, "[Critic]")
+            elif "[Validator]" in m: _push_detail("Validate",   m, "[Validator]")
+            elif "[Deliver]"   in m: _push_detail("Deliver",    m, "[Deliver]")
 
         _log.info = _intercepting_info  # type: ignore[method-assign]
 
@@ -188,7 +206,7 @@ def _pipeline_worker(
             repo_url=req_dict["repo_url"],
             commit_sha=commit_sha,
             max_issues=req_dict.get("max_issues", 0),
-            severities=req_dict.get("severities", "BLOCKER,CRITICAL,MAJOR,MINOR,INFO"),
+            severities=req_dict.get("severities", "BLOCKER,CRITICAL,MAJOR,MINOR,INFO"),  # ← NEW
         )
         elapsed_ms = int((time.time() - t0) * 1000)
 
@@ -433,15 +451,27 @@ def get_sonar_rule(rule_key: str) -> dict:
         "fix_summary":        fix_summary,
         "severity":           rule.get("severity", ""),
         "type":               rule.get("type", ""),
+        "status":             rule.get("status", ""),
+        "lang":               rule.get("lang", ""),
+        "lang_name":          rule.get("langName", ""),
         "tags":               rule.get("tags", []),
-        "remediation_effort": rule.get("remFnBaseEffort", ""),
+        "sys_tags":           rule.get("sysTags", []),
+        "rem_fn_type":        rule.get("remFnType", ""),
+        "rem_fn_base_effort": rule.get("remFnBaseEffort", ""),
+        "is_template":        rule.get("isTemplate", False),
+        "created_at":         rule.get("createdAt", ""),
     }
 
 
 @app.post("/api/sonar/fetch")
 def fetch_sonar_issues(req: SonarFetchRequest) -> dict:
-    """Live-pull issues from a SonarQube instance and store them in memory."""
+    """
+    Proxy a live SonarQube /api/issues/search call using the configured
+    SONAR_TOKEN and SONAR_HOST_URL, then store results in the shared
+    _last_report_issues store so the issues table and pipeline can use them.
+    """
     global _last_report_issues
+
     import requests as _requests
     from config import settings as s
 
@@ -450,93 +480,135 @@ def fetch_sonar_issues(req: SonarFetchRequest) -> dict:
     if not s.sonar_host_url:
         raise HTTPException(400, "SONAR_HOST_URL is not configured. Add it in Settings.")
 
-    base_url  = s.sonar_host_url.rstrip("/")
-    all_issues: list[dict] = []
-    page = 1
+    base_url = s.sonar_host_url.rstrip("/")
+    url      = f"{base_url}/api/issues/search"
+    params: dict = {
+        "componentKeys": req.component_keys,
+        "resolved":      "false" if not req.resolved else "true",
+        "severities":    req.severities,
+        "ps":            req.ps,
+        "p":             1,
+    }
 
-    while True:
-        try:
+    all_issues:  list[dict] = []
+    effort_total = 0
+    total_sonar  = 0
+
+    try:
+        while True:
             resp = _requests.get(
-                f"{base_url}/api/issues/search",
+                url,
                 auth=(s.sonar_token, ""),
-                params={
-                    "componentKeys": req.component_keys,
-                    "severities":    req.severities,
-                    "resolved":      str(req.resolved).lower(),
-                    "ps":            min(req.ps, 500),
-                    "p":             page,
-                },
+                params=params,
                 timeout=30,
             )
-        except Exception as exc:
-            raise HTTPException(502, f"Could not reach SonarQube: {exc}") from exc
+            if resp.status_code == 401:
+                raise HTTPException(401, "SonarQube authentication failed — check SONAR_TOKEN")
+            if resp.status_code != 200:
+                raise HTTPException(
+                    resp.status_code,
+                    f"SonarQube returned HTTP {resp.status_code}: {resp.text[:200]}",
+                )
 
-        if resp.status_code == 401:
-            raise HTTPException(401, "SonarQube authentication failed — check SONAR_TOKEN")
-        if resp.status_code != 200:
-            raise HTTPException(resp.status_code, f"SonarQube error: {resp.text[:300]}")
+            body         = resp.json()
+            total_sonar  = body.get("total", 0)
+            effort_total = body.get("effortTotal", effort_total)
+            raw_issues   = body.get("issues", [])
+            all_issues  += [_normalize_sonar_issue(i) for i in raw_issues]
 
-        body   = resp.json()
-        issues = body.get("issues", [])
-        all_issues.extend(_normalize_sonar_issue(i) for i in issues)
+            # Pagination — stop when all pages fetched
+            page_index = body.get("p", params["p"])
+            page_size  = body.get("ps", req.ps)
+            if page_index * page_size >= total_sonar:
+                break
+            params["p"] = page_index + 1
 
-        total   = body.get("total", 0)
-        fetched = page * min(req.ps, 500)
-        if fetched >= total or not issues:
-            break
-        page += 1
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"[SonarFetch] Error: {exc}")
+        raise HTTPException(500, f"Failed to reach SonarQube: {exc}") from exc
 
     _last_report_issues = all_issues
 
-    effort_total = sum(
-        int(i["effort"].replace("min", "").replace("h", "").strip() or 0)
-        for i in all_issues if i.get("effort")
-    )
+    # Persist fetched issues to disk — survives backend restart,
+    # available to the pipeline exactly like an uploaded report
+    try:
+        uploads_dir = Path(__file__).parent / "uploads"
+        uploads_dir.mkdir(exist_ok=True)
+        report_path = uploads_dir / "sonar-ai-last-report.json"
+        report_data = {
+            "source":       "sonarqube_live_fetch",
+            "component":    req.component_keys,
+            "fetched_at":   time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "total":        total_sonar,
+            "effort_total": effort_total,
+            "issues":       all_issues,
+        }
+        report_path.write_text(json.dumps(report_data, indent=2))
+        logger.info(f"[SonarFetch] Saved {len(all_issues)} issues to {report_path}")
+    except Exception as exc:
+        logger.warning(f"[SonarFetch] Could not save report to disk: {exc}")
 
     logger.info(
-        f"[API] Fetched {len(all_issues)} issues from SonarQube "
-        f"component={req.component_keys}"
+        f"[SonarFetch] Fetched {len(all_issues)} issues "
+        f"from {req.component_keys} (total={total_sonar})"
     )
 
     return {
-        "message":      f"Fetched {len(all_issues)} issues",
+        "message":      f"Fetched {len(all_issues)} issues from SonarQube",
         "issue_count":  len(all_issues),
-        "total":        len(all_issues),
+        "total":        total_sonar,
         "effort_total": effort_total,
         "component":    req.component_keys,
     }
 
 
 @app.get("/api/sonar/report")
-def get_sonar_report() -> dict:
-    """Return a structured summary of the currently loaded issues."""
-    from datetime import datetime
-
+def get_structured_report() -> dict:
+    """
+    Return a structured summary of the currently loaded issues,
+    grouped by severity and rule, ready to download as a JSON report.
+    """
     issues = _last_report_issues
-    by_severity: dict[str, dict] = {}
+
+    if not issues:
+        return {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "total":        0,
+            "effort_total": "0min",
+            "by_severity":  {},
+            "by_rule":      {},
+            "issues":       [],
+        }
+
+    sev_order   = ["BLOCKER", "CRITICAL", "MAJOR", "MINOR", "INFO"]
+    by_severity: dict[str, list] = {s: [] for s in sev_order}
     by_rule:     dict[str, dict] = {}
 
-    for i in issues:
-        sev  = i.get("severity", "INFO")
-        rule = i.get("rule_key", "")
-        file = i.get("component", "")
-
-        if sev not in by_severity:
-            by_severity[sev] = {"count": 0, "issues": []}
-        by_severity[sev]["count"] += 1
-        by_severity[sev]["issues"].append(i)
+    for iss in issues:
+        sev  = iss.get("severity", "INFO")
+        rule = iss.get("rule_key", "unknown")
+        by_severity.setdefault(sev, []).append(iss)
 
         if rule not in by_rule:
             by_rule[rule] = {"rule_key": rule, "severity": sev, "count": 0, "files": []}
         by_rule[rule]["count"] += 1
-        if file not in by_rule[rule]["files"]:
-            by_rule[rule]["files"].append(file)
+        comp = iss.get("component", "")
+        if comp and comp not in by_rule[rule]["files"]:
+            by_rule[rule]["files"].append(comp)
+
+    severity_summary = {
+        sev: {"count": len(lst), "issues": lst}
+        for sev, lst in by_severity.items()
+        if lst
+    }
 
     return {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "total":        len(issues),
-        "by_severity":  by_severity,
-        "by_rule":      by_rule,
+        "by_severity":  severity_summary,
+        "by_rule":      dict(sorted(by_rule.items(), key=lambda x: -x[1]["count"])),
         "issues":       issues,
     }
 
@@ -544,11 +616,7 @@ def get_sonar_report() -> dict:
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 @app.post("/api/pipeline/run")
-def start_pipeline(req: PipelineRunRequest) -> dict:
-    """
-    Start a pipeline run in a child process.
-    Returns run_id immediately; client polls /api/pipeline/status/{run_id}.
-    """
+def start_run(req: PipelineRunRequest) -> dict:
     report_path = str(Path(__file__).parent / "uploads" / "sonar-ai-last-report.json")
     if not Path(report_path).exists():
         raise HTTPException(400, "No sonar report uploaded yet.")
@@ -644,10 +712,8 @@ def list_runs() -> dict:
     """
     Return full run data for every run in memory so the Angular UI can
     rehydrate its pipeline history after a page reload.
-
-    Each entry mirrors the shape of GET /api/pipeline/status/{run_id}
-    (minus the internal _queue key) so the frontend can use the same
-    _backendRunToUiRun() mapping for both endpoints.
+    Each entry mirrors GET /api/pipeline/status/{run_id} (minus _queue).
+    Most-recent runs are returned first.
     """
     runs_out = []
     for run_id, run in _runs.items():
@@ -655,14 +721,29 @@ def list_runs() -> dict:
         q = run.get("_queue")
         if q:
             _drain_queue(run_id, q)
-
         runs_out.append({k: v for k, v in run.items() if k != "_queue"})
 
-    # Most-recent first (insertion order is preserved in Python 3.7+ dicts,
-    # newest runs are appended last, so we reverse)
-    runs_out.reverse()
-
+    runs_out.reverse()   # newest first (dict preserves insertion order in Py 3.7+)
     return {"runs": runs_out}
+
+
+@app.delete("/api/pipeline/runs/{run_id}")
+def delete_run(run_id: str) -> dict:
+    """
+    Remove a finished run from the in-memory store so it won't reappear
+    after the UI reloads. Returns 409 if the run is still active.
+    """
+    if run_id not in _runs:
+        raise HTTPException(404, f"Run {run_id} not found")
+
+    proc = _processes.get(run_id)
+    if proc and proc.is_alive():
+        raise HTTPException(409, f"Run {run_id} is still active — cancel it first")
+
+    _runs.pop(run_id, None)
+    _processes.pop(run_id, None)
+    logger.info(f"[API] Deleted run {run_id}")
+    return {"message": f"Run {run_id} deleted"}
 
 
 # ── Escalations ───────────────────────────────────────────────────────────────
@@ -694,16 +775,17 @@ def list_escalations() -> dict:
                 file_name = line.split("|")[2].strip().strip("`")
             if "| Rule |" in line:
                 rule_key = line.split("|")[2].strip().strip("`")
+            if severity != "UNKNOWN" and file_name and rule_key:
+                break
 
         items.append({
             "filename":    md_file.name,
             "issue_key":   issue_key,
-            "rule_short":  rule_short,
-            "rule_key":    rule_key,
+            "rule_key":    rule_key or rule_short,
             "severity":    severity,
-            "file":        file_name,
-            "modified_at": stat.st_mtime,
+            "file_name":   file_name,
             "size_bytes":  stat.st_size,
+            "modified_at": stat.st_mtime,
         })
 
     return {"escalations": items, "total": len(items)}
@@ -711,34 +793,36 @@ def list_escalations() -> dict:
 
 @app.get("/api/escalations/{filename}")
 def get_escalation(filename: str) -> dict:
-    """Return the raw markdown content of a single escalation file."""
+    """Return the full markdown content of one escalation file."""
     from config import settings as s
-    esc_dir  = Path(s.escalation_dir)
-    esc_file = esc_dir / filename
+    if not filename.endswith(".md") or "/" in filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
 
-    if not esc_file.exists() or not esc_file.suffix == ".md":
-        raise HTTPException(404, f"Escalation '{filename}' not found")
+    esc_path = Path(s.escalation_dir) / filename
+    if not esc_path.exists():
+        raise HTTPException(404, f"Escalation {filename} not found")
 
     return {
         "filename":    filename,
-        "content":     esc_file.read_text(encoding="utf-8", errors="replace"),
-        "modified_at": esc_file.stat().st_mtime,
+        "content":     esc_path.read_text(encoding="utf-8", errors="replace"),
+        "modified_at": esc_path.stat().st_mtime,
     }
 
 
 @app.delete("/api/escalations/{filename}")
 def delete_escalation(filename: str) -> dict:
-    """Delete a single escalation file."""
+    """Delete an escalation file."""
     from config import settings as s
-    esc_dir  = Path(s.escalation_dir)
-    esc_file = esc_dir / filename
+    if not filename.endswith(".md") or "/" in filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
 
-    if not esc_file.exists():
-        raise HTTPException(404, f"Escalation '{filename}' not found")
+    esc_path = Path(s.escalation_dir) / filename
+    if not esc_path.exists():
+        raise HTTPException(404, f"Escalation {filename} not found")
 
-    esc_file.unlink()
+    esc_path.unlink()
     logger.info(f"[API] Deleted escalation: {filename}")
-    return {"message": f"Escalation '{filename}' deleted"}
+    return {"message": f"Deleted {filename}"}
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -746,6 +830,10 @@ def delete_escalation(filename: str) -> dict:
 @app.get("/api/config")
 def get_config() -> dict:
     from config import settings as s
+
+    def mask(v: str) -> str:
+        return "***" if v else ""
+
     return {
         "gcp_project":                 s.gcp_project,
         "vertex_model":                s.vertex_model,
@@ -753,116 +841,129 @@ def get_config() -> dict:
         "max_tokens":                  s.max_tokens,
         "confidence_high_threshold":   s.confidence_high_threshold,
         "confidence_medium_threshold": s.confidence_medium_threshold,
-        "github_token":                "***" if s.github_token else "",
-        "github_repo":                 s.github_repo,
-        "sonar_token":                 "***" if s.sonar_token  else "",
+        "github_token":                mask(s.github_token),
+        "github_repo":                 "",
+        "sonar_token":                 mask(s.sonar_token),
         "sonar_host_url":              s.sonar_host_url,
-        "planner_temperature":         s.planner_temp,
-        "generator_temperature":       s.generator_temp,
+        "planner_temperature":          s.planner_temperature,
+        "generator_temperature":        s.generator_temperature,
         "max_critic_retries":          s.max_critic_retries,
         "chroma_persist_dir":          s.chroma_persist_dir,
         "embedding_model":             s.embedding_model,
         "rag_top_k":                   s.rag_top_k,
-        "enable_rag":                  not getattr(s, "no_rag", False),
-        "langsmith_project":           s.langsmith_project,
-        "langsmith_api_key":           "***" if s.langsmith_api_key else "",
-        "langchain_tracing":           s.langchain_tracing,
+        "enable_rag":                  s.enable_rag,
         "parallel_issues":             s.parallel_issues,
         "enable_sonar_rescan":         s.enable_sonar_rescan,
     }
 
 
+@app.post("/api/reload")
+def reload_config() -> dict:
+    """
+    Re-import the config module so updated .env values are picked up
+    without restarting uvicorn. Called automatically by the UI after
+    saving settings.
+    """
+    import importlib
+    try:
+        import config as _config_module
+        importlib.reload(_config_module)
+        # Reassign the module-level singleton so all subsequent imports see the new values
+        _config_module.settings = _config_module.Settings()
+        logger.info("[Reload] Config reloaded from .env")
+        return {
+            "message":       "Config reloaded successfully",
+            "sonar_host_url": _config_module.settings.sonar_host_url,
+            "sonar_token_set": bool(_config_module.settings.sonar_token),
+        }
+    except Exception as exc:
+        logger.error(f"[Reload] Failed to reload config: {exc}")
+        raise HTTPException(500, f"Config reload failed: {exc}") from exc
+
+
 @app.post("/api/config")
-def save_config(req: ConfigUpdateRequest) -> dict:
-    """
-    Persist changed settings to the .env file.
-    Only fields explicitly included in the request body are updated.
-    """
-    env_path = Path(__file__).parent / ".env"
-    env_lines: list[str] = []
+def update_config(req: ConfigUpdateRequest) -> dict:
+    env_path = Path(".env")
+    lines: list[str] = env_path.read_text().splitlines() if env_path.exists() else []
 
-    if env_path.exists():
-        env_lines = env_path.read_text().splitlines()
+    token_fields = {"github_token", "sonar_token"}
 
-    def _upsert(key: str, value: str) -> None:
-        for i, line in enumerate(env_lines):
-            if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
-                env_lines[i] = f"{key}={value}"
-                return
-        env_lines.append(f"{key}={value}")
+    # Include non-None values; also include token fields even if empty string (explicit clear)
+    mapping = {
+        k: v for k, v in req.model_dump().items()
+        if v is not None or (k in token_fields and v == "")
+    }
 
-    payload = req.model_dump(exclude_none=True)
-
-    field_map = {
+    env_key_map = {
         "gcp_project":                 "GCP_PROJECT",
         "vertex_model":                "VERTEX_MODEL",
         "max_issues":                  "MAX_ISSUES",
         "max_tokens":                  "MAX_TOKENS",
         "confidence_high_threshold":   "CONFIDENCE_HIGH_THRESHOLD",
         "confidence_medium_threshold": "CONFIDENCE_MEDIUM_THRESHOLD",
-        "github_repo":                 "GITHUB_REPO",
+        "github_token":                "GITHUB_TOKEN",
+        "sonar_token":                 "SONAR_TOKEN",
         "sonar_host_url":              "SONAR_HOST_URL",
-        "sonar_org":                   "SONAR_ORG",
-        "planner_temp":                "PLANNER_TEMP",
-        "generator_temp":              "GENERATOR_TEMP",
+        "planner_temp":                "PLANNER_TEMPERATURE",
+        "generator_temp":              "GENERATOR_TEMPERATURE",
         "max_critic_retries":          "MAX_CRITIC_RETRIES",
         "chroma_persist_dir":          "CHROMA_PERSIST_DIR",
         "embedding_model":             "EMBEDDING_MODEL",
         "rag_top_k":                   "RAG_TOP_K",
-        "langsmith_project":           "LANGSMITH_PROJECT",
-        "langchain_tracing":           "LANGCHAIN_TRACING_V2",
     }
 
-    for py_field, env_key in field_map.items():
-        if py_field in payload:
-            _upsert(env_key, str(payload[py_field]))
+    updated:   set[str]   = set()
+    new_lines: list[str]  = []
 
-    # Tokens: only write if non-empty (empty string = user cleared the field — skip)
-    if payload.get("github_token"):
-        _upsert("GITHUB_TOKEN", payload["github_token"])
-    if payload.get("sonar_token"):
-        _upsert("SONAR_TOKEN", payload["sonar_token"])
-    if payload.get("langsmith_api_key"):
-        _upsert("LANGSMITH_API_KEY", payload["langsmith_api_key"])
+    for line in lines:
+        written = False
+        for field, env_key in env_key_map.items():
+            if field in mapping and line.startswith(f"{env_key}="):
+                val = ("true"  if mapping[field] is True  else
+                       "false" if mapping[field] is False else
+                       str(mapping[field]))
+                new_lines.append(f"{env_key}={val}")
+                updated.add(field)
+                written = True
+                break
+        if not written:
+            new_lines.append(line)
 
-    env_path.write_text("\n".join(env_lines) + "\n")
-    logger.info(f"[API] Config saved — updated keys: {list(payload.keys())}")
-    return {"message": "Config saved"}
+    # Append any keys not already present in the file
+    for field, env_key in env_key_map.items():
+        if field in mapping and field not in updated:
+            val = ("true"  if mapping[field] is True  else
+                   "false" if mapping[field] is False else
+                   str(mapping[field]))
+            new_lines.append(f"{env_key}={val}")
+
+    env_path.write_text("\n".join(new_lines) + "\n")
+    return {"message": "Config saved", "updated_fields": list(mapping.keys())}
 
 
-@app.post("/api/reload")
-def reload_config() -> dict:
-    """
-    Re-read the .env file and patch the live settings object so new values
-    take effect immediately without restarting uvicorn.
-    """
-    from config import settings as s
-    from dotenv import dotenv_values
+# ── Startup / shutdown ────────────────────────────────────────────────────────
 
-    env_path = Path(__file__).parent / ".env"
-    if not env_path.exists():
-        return {"message": "No .env file found — nothing to reload",
-                "sonar_token_set": bool(s.sonar_token),
-                "sonar_host_url":  s.sonar_host_url}
+@app.on_event("startup")
+def _startup() -> None:
+    global _last_report_issues
+    multiprocessing.set_start_method("spawn", force=True)
 
-    fresh = dotenv_values(str(env_path))
+    report_path = Path(__file__).parent / "uploads" / "sonar-ai-last-report.json"
+    if report_path.exists():
+        try:
+            from parser import parse_sonar_report
+            issues = parse_sonar_report(str(report_path))
+            _last_report_issues = [dict(i) for i in issues]
+            logger.info(f"[Startup] Loaded {len(_last_report_issues)} issues from {report_path}")
+        except Exception as exc:
+            logger.warning(f"[Startup] Could not load saved report: {exc}")
 
-    # Patch the live singleton so in-process code picks up new values
-    for attr, env_key in [
-        ("github_token",  "GITHUB_TOKEN"),
-        ("github_repo",   "GITHUB_REPO"),
-        ("sonar_token",   "SONAR_TOKEN"),
-        ("sonar_host_url","SONAR_HOST_URL"),
-        ("sonar_org",     "SONAR_ORG"),
-        ("gcp_project",   "GCP_PROJECT"),
-        ("vertex_model",  "VERTEX_MODEL"),
-    ]:
-        if env_key in fresh:
-            object.__setattr__(s, attr, fresh[env_key])
 
-    logger.info("[API] Live config reloaded from .env")
-    return {
-        "message":         "Config reloaded",
-        "sonar_token_set": bool(s.sonar_token),
-        "sonar_host_url":  s.sonar_host_url,
-    }
+@app.on_event("shutdown")
+def _shutdown() -> None:
+    """Kill all child processes when uvicorn stops."""
+    for run_id, proc in list(_processes.items()):
+        if proc.is_alive():
+            logger.warning(f"[API] Shutdown: terminating PID={proc.pid}")
+            proc.terminate()
+            proc.join(timeout=2)
