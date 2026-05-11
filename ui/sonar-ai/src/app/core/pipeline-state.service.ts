@@ -38,7 +38,7 @@ export class PipelineStateService {
   private api  = inject(ApiService);
   private data = inject(DataService);
 
-  runs     = signal<UiRun[]>(this._seedRuns());
+  runs     = signal<UiRun[]>([]);
   selected = signal<UiRun | null>(null);
   running  = signal(false);
   error    = signal<string | null>(null);
@@ -48,6 +48,85 @@ export class PipelineStateService {
 
   get allRuns() { return this.runs(); }
 
+  constructor() {
+    // Rehydrate run history from backend on every page load.
+    // Falls back to static seed data if the backend is unreachable.
+    this.api.listRuns().subscribe({
+      next: ({ runs }) => {
+        if (runs?.length) {
+          const hydrated = runs.map((r: any) => this._backendRunToUiRun(r));
+          this.runs.set(hydrated);
+          this.selected.set(hydrated[0] ?? null);
+        } else {
+          // Backend is up but no runs yet — start empty
+          this.runs.set([]);
+        }
+
+        // Re-attach polling for any run that is still in-progress
+        const inProgress = this.runs().find(
+          r => r.status === 'running' || r.status === 'queued'
+        );
+        if (inProgress) {
+          this.running.set(true);
+          this._activeRunId = inProgress.id;
+          this._poll = this.api.pollRun(inProgress.id).subscribe({
+            next:  (s: RunStatus) => this._applyStatus(inProgress.id, s),
+            error: (err: Error) => {
+              this.error.set(err.message);
+              this.running.set(false);
+              this._activeRunId = null;
+            },
+          });
+        }
+      },
+      error: () => {
+        // Backend not running — fall back to static seed data so the UI
+        // isn't completely empty during local development.
+        this.runs.set(this._seedRuns());
+        const first = this.runs()[0] ?? null;
+        this.selected.set(first);
+      },
+    });
+  }
+
+  // ── Map a raw backend run object → UiRun ──────────────────────────────────
+  private _backendRunToUiRun(r: any): UiRun {
+    // The backend may return 0, 1, or many results per run.
+    // Use the first result for the card's headline fields.
+    const first = r.results?.[0];
+
+    // Confidence comes back as a 0-1 float from the backend.
+    const confLabel: ConfLabel = first?.confidence != null
+      ? this.confLabel(first.confidence)
+      : null;
+
+    // Normalise steps — handle both the full step objects and the older
+    // summary-only format (where the backend only stored a count).
+    const steps: PipelineStep[] = Array.isArray(r.steps)
+      ? r.steps.map((s: any) => ({
+          label:  s.label  ?? '',
+          status: s.status ?? 'done',
+          detail: s.detail ?? '',
+          ms:     s.ms     ?? 0,
+        }))
+      : [];
+
+    return {
+      id:         r.id ?? r.run_id,
+      ruleKey:    first?.rule_key  ?? '—',
+      severity:   first?.severity  ?? 'INFO',
+      component:  first?.file_path ?? '',
+      outcome:    first?.outcome   ?? (r.status === 'error' ? 'error' : undefined),
+      confidence: confLabel,
+      prUrl:      first?.pr_url    ?? undefined,
+      steps,
+      live:       false,
+      status:     r.status ?? 'done',
+      request:    r.request,
+    };
+  }
+
+  // ── Static seed (fallback when backend is offline) ─────────────────────────
   private _seedRuns(): UiRun[] {
     return this.data.runs.map(r => ({
       id:         r.id,
@@ -104,11 +183,11 @@ export class PipelineStateService {
 
     this.api.startRun(req).subscribe({
       next: ({ run_id }) => this._pollRun(run_id, req),
-	error: (err: any) => {
-  	const detail = err?.error?.detail ?? err?.message ?? 'Pipeline start failed';
-  	this.error.set(detail);
-  	this.running.set(false);
-	},
+      error: (err: any) => {
+        const detail = err?.error?.detail ?? err?.message ?? 'Pipeline start failed';
+        this.error.set(detail);
+        this.running.set(false);
+      },
     });
   }
 
@@ -117,7 +196,7 @@ export class PipelineStateService {
 
     const liveRun: UiRun = {
       id:        runId,
-      ruleKey:   '—',           // blank until first result comes in
+      ruleKey:   '—',
       severity:  'INFO',
       component: '',
       steps: ['Ingest','Load Repo','RAG Fetch','Fetch Rule','Planner','Generator','Critic','Validate','Deliver']
@@ -172,7 +251,6 @@ export class PipelineStateService {
         component:  first?.file_path ? first.file_path : r.component,
       };
 
-      // Sync selected in same signal update tick for instant reactivity
       if (this.selected()?.id === runId) {
         this.selected.set(updated);
       }
@@ -188,15 +266,9 @@ export class PipelineStateService {
         this.error.set(status.error);
       }
 
-      // ── REMOVED: auto-delete on no results ───────────────────────────────
-      // Previously this block deleted the run card after 4 s when no issues
-      // were found. Now we keep it in history permanently with outcome='empty'
-      // so users have a full record of every pipeline run.
-      // The error banner still surfaces the message; the card stays in the list.
       const noResults = !status.results || status.results.length === 0;
       if (noResults && status.status === 'done') {
         this.error.set('No issues found for the selected severity — run is kept in history.');
-        // ← no deleteRun() call; card persists with status='empty'
         return;
       }
 
@@ -229,12 +301,10 @@ export class PipelineStateService {
 
   // ── Delete a finished run card (manual only) ──────────────────────────────
   deleteRun(id: string) {
-    // Don't delete actively running run
     if (id === this._activeRunId) return;
 
     this.runs.update(rs => rs.filter(r => r.id !== id));
 
-    // Clear selected if it was this run
     if (this.selected()?.id === id) {
       this.selected.set(this.runs()[0] ?? null);
     }
